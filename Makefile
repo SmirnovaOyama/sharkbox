@@ -4,6 +4,7 @@ PREFIX ?= /opt/homebrew
 APPDIR ?= /Applications
 BIN     = build/shark
 APP     = build/Sharkbox.app
+APP_STAMP = build/.app.stamp
 ENTITLEMENTS = shark.entitlements
 CLI_SOURCES  = $(wildcard Sources/shark/*.swift)
 SHARED       = Sources/shark/Util.swift Sources/shark/Paths.swift Sources/shark/Machine.swift \
@@ -16,6 +17,7 @@ PLUGIN_DIRS := $(SDKROOT)/usr/lib/swift/host/plugins $(shell dirname $(shell xcr
 PLUGIN_FLAGS = $(foreach d,$(PLUGIN_DIRS),-plugin-path $(d))
 
 .PHONY: all build app install uninstall clean run
+.DELETE_ON_ERROR:
 
 all: build app
 
@@ -28,7 +30,9 @@ $(BIN): $(CLI_SOURCES) $(ENTITLEMENTS)
 	codesign --force --sign - --entitlements $(ENTITLEMENTS) $(BIN)
 
 # ---- GUI app ----
-app: $(APP)
+# The target is a stamp file, not the .app directory: make compares directory mtimes, so a bundle left
+# half-built by a failed compile looks "up to date" and the next build silently does nothing.
+app: $(APP_STAMP)
 
 build/Sharkbox.icns: scripts/MakeIcon.swift
 	mkdir -p build
@@ -36,7 +40,7 @@ build/Sharkbox.icns: scripts/MakeIcon.swift
 	rm -rf build/Sharkbox.iconset && build/makeicon build/Sharkbox.iconset
 	iconutil -c icns build/Sharkbox.iconset -o build/Sharkbox.icns
 
-$(APP): $(BIN) $(GUI_SOURCES) $(SHARED) Resources/Info.plist build/Sharkbox.icns
+$(APP_STAMP): $(BIN) $(GUI_SOURCES) $(SHARED) Resources/Info.plist build/Sharkbox.icns
 	rm -rf $(APP)
 	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
 	swiftc -O -swift-version 5 -parse-as-library -target $(TARGET) $(PLUGIN_FLAGS) \
@@ -46,18 +50,26 @@ $(APP): $(BIN) $(GUI_SOURCES) $(SHARED) Resources/Info.plist build/Sharkbox.icns
 	cp Resources/Info.plist $(APP)/Contents/Info.plist
 	cp build/Sharkbox.icns $(APP)/Contents/Resources/Sharkbox.icns
 	codesign --force --sign - --entitlements $(ENTITLEMENTS) $(APP)/Contents/MacOS/shark
+	xattr -cr $(APP)          # codesign refuses a bundle carrying extended attributes
 	codesign --force --sign - $(APP)
+	touch $(APP_STAMP)
 
 run: app
 	open $(APP)
 
 # ---- install ----
+# Installing over a binary that is currently executing fails with ETXTBSY, which is easy to miss in a
+# long build log — machines keep a `shark __runner` alive for their whole lifetime. Stage next to the
+# target and rename over it instead: running processes keep the old inode, new ones get the new build.
 install: build app
 	install -d $(PREFIX)/bin
-	install -m 755 $(BIN) $(PREFIX)/bin/shark
-	codesign --force --sign - --entitlements $(ENTITLEMENTS) $(PREFIX)/bin/shark
+	install -m 755 $(BIN) $(PREFIX)/bin/.shark.new
+	codesign --force --sign - --entitlements $(ENTITLEMENTS) $(PREFIX)/bin/.shark.new
+	mv -f $(PREFIX)/bin/.shark.new $(PREFIX)/bin/shark
+	rm -rf $(APPDIR)/.Sharkbox.new.app
+	cp -R $(APP) $(APPDIR)/.Sharkbox.new.app
 	rm -rf $(APPDIR)/Sharkbox.app
-	cp -R $(APP) $(APPDIR)/Sharkbox.app
+	mv -f $(APPDIR)/.Sharkbox.new.app $(APPDIR)/Sharkbox.app
 	@echo "installed: $(PREFIX)/bin/shark and $(APPDIR)/Sharkbox.app"
 
 uninstall:

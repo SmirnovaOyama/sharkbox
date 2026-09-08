@@ -1,4 +1,5 @@
 import Foundation
+import Virtualization
 
 struct MachineConfig: Codable {
     var name: String
@@ -41,6 +42,9 @@ final class Machine {
     var runnerLog: URL { dir.appendingPathComponent("runner.log") }
     var provisionedFlag: URL { dir.appendingPathComponent(".provisioned") }
     var vsockSocket: URL { dir.appendingPathComponent("vsock.sock") }
+    var lockFile: URL { dir.appendingPathComponent("lock") }
+    /// Present when the guest powered itself off; absent after a force stop or a crash.
+    var cleanFlag: URL { dir.appendingPathComponent(".clean-shutdown") }
 
     static func validName(_ n: String) -> Bool {
         let ok = n.range(of: "^[a-z0-9][a-z0-9-]{0,62}$", options: .regularExpression) != nil
@@ -94,4 +98,57 @@ final class Machine {
     func writeState(_ s: String) { writeString(s, to: stateFile) }
 
     var isDefault: Bool { readString(Paths.defaultMachine) == name }
+}
+
+enum DiskAttachment {
+    /// Every process that opens a machine's disk image must use the SAME caching policy. The default
+    /// (`.automatic`) let the runner and the helper VMs disagree: the helper wrote through one path
+    /// while the next runner read through another, so a boot right after an offline resize or fsck
+    /// could read pre-write blocks and ext4 would reject them ("checksum invalid"). Uncached reads and
+    /// writes plus full synchronization give one coherent view of the file across processes.
+    static func readWrite(_ url: URL) throws -> VZDiskImageStorageDeviceAttachment {
+        try VZDiskImageStorageDeviceAttachment(url: url, readOnly: false,
+                                               cachingMode: .uncached, synchronizationMode: .full)
+    }
+
+    static func readOnly(_ url: URL) throws -> VZDiskImageStorageDeviceAttachment {
+        try VZDiskImageStorageDeviceAttachment(url: url, readOnly: true,
+                                               cachingMode: .uncached, synchronizationMode: .full)
+    }
+
+    /// Push everything this process wrote to the file all the way to the medium. APFS needs
+    /// F_FULLFSYNC for that; a plain fsync() only reaches the drive's write cache.
+    static func flush(_ url: URL) {
+        let fd = open(url.path, O_RDONLY)
+        guard fd >= 0 else { return }
+        _ = fcntl(fd, F_FULLFSYNC)
+        close(fd)
+    }
+}
+
+/// Exclusive per-machine lock. Guarantees that only one process ever has a machine's disk image
+/// open for writing — two VMs on one raw ext4 image destroy the filesystem within seconds.
+/// The lock is released when the instance is deallocated or the holding process exits.
+final class MachineLock {
+    private let fd: Int32
+    let machine: String
+
+    init?(_ m: Machine) {
+        machine = m.name
+        try? FileManager.default.createDirectory(at: m.dir, withIntermediateDirectories: true)
+        fd = open(m.lockFile.path, O_CREAT | O_RDWR, 0o600)
+        guard fd >= 0 else { return nil }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { close(fd); return nil }
+    }
+
+    deinit { close(fd) }   // closing the descriptor releases the flock
+
+    /// Take the lock or explain who holds it.
+    static func acquire(_ m: Machine) throws -> MachineLock {
+        if let lock = MachineLock(m) { return lock }
+        if let pid = m.pid {
+            throw SharkError("\(m.name) is in use by another Sharkbox process (pid \(pid)) — stop it first: shark stop \(m.name)")
+        }
+        throw SharkError("\(m.name) is locked by another Sharkbox process")
+    }
 }

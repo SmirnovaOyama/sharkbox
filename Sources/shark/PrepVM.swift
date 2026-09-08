@@ -16,17 +16,51 @@ final class PrepVM: NSObject, VZVirtualMachineDelegate {
     ///   - partition: nil for a partitionless filesystem, else the partition number holding the root fs
     static func growRootFilesystem(kernel: URL, initrd: URL, helperRootfs: URL, targetDisk: URL,
                                    partition: Int?, logFile: URL, timeout: TimeInterval = 120) throws {
-        var script = "mount -t proc proc /proc; mount -t sysfs sys /sys; mount -t tmpfs tmp /tmp; mount -t tmpfs run /run; "
-        let dev: String
-        if let partition {
-            script += "growpart /dev/vdb \(partition); "
-            dev = "/dev/vdb\(partition)"
-        } else {
-            dev = "/dev/vdb"
+        let dev = partition.map { "/dev/vdb\($0)" } ?? "/dev/vdb"
+        var script = ""
+        if let partition { script += "growpart /dev/vdb \(partition); " }
+        script += "e2fsck -f -p \(dev); if resize2fs -f \(dev); then sync; echo SHARKBOX_PREP_OK; else echo SHARKBOX_PREP_FAIL; fi"
+        try run(kernel: kernel, initrd: initrd, helperRootfs: helperRootfs, targetDisk: targetDisk,
+                script: script, logFile: logFile, timeout: timeout)
+    }
+
+    enum FsckMode {
+        case preen    // -p: replay the journal, fix only unambiguous problems (what a real boot does)
+        case repair   // -y: answer yes to everything
+        case dryRun   // -n: touch nothing — cannot replay the journal, so it over-reports after a crash
+
+        var flags: String {
+            switch self {
+            case .preen: return "-f -p"
+            case .repair: return "-f -y"
+            case .dryRun: return "-f -n"
+            }
         }
-        // The host watches the console for the marker and then stops the VM itself, so nothing here
-        // depends on poweroff working inside a bare init; the trailing sleep keeps PID 1 alive meanwhile.
-        script += "e2fsck -f -p \(dev); if resize2fs -f \(dev); then sync; echo SHARKBOX_PREP_OK; else echo SHARKBOX_PREP_FAIL; fi; sleep 600"
+    }
+
+    /// Run e2fsck on a machine's (stopped) root filesystem. Returns e2fsck's exit code
+    /// (0 clean, 1 errors fixed, 2 fixed + reboot advised, 4 errors left, 8 operational error).
+    static func checkFilesystem(kernel: URL, initrd: URL, helperRootfs: URL, targetDisk: URL,
+                                partition: Int?, mode fsckMode: FsckMode, logFile: URL, timeout: TimeInterval = 600) throws -> Int {
+        let dev = partition.map { "/dev/vdb\($0)" } ?? "/dev/vdb"
+        let mode = fsckMode.flags
+        let script = "e2fsck \(mode) \(dev); rc=$?; sync; echo SHARKBOX_FSCK_RC=$rc; echo SHARKBOX_PREP_OK"
+        try run(kernel: kernel, initrd: initrd, helperRootfs: helperRootfs, targetDisk: targetDisk,
+                script: script, logFile: logFile, timeout: timeout)
+        let log = (try? String(contentsOf: logFile, encoding: .utf8)) ?? ""
+        guard let m = log.range(of: #"SHARKBOX_FSCK_RC=(\d+)"#, options: .regularExpression),
+              let rc = Int(log[m].split(separator: "=")[1]) else {
+            throw SharkError("e2fsck did not report a result (see \(logFile.path))")
+        }
+        return rc
+    }
+
+    /// Boot the helper with `targetDisk` as /dev/vdb and run `script` as PID 1 (via bash). The script must
+    /// print SHARKBOX_PREP_OK or SHARKBOX_PREP_FAIL; the host watches the console and stops the VM itself.
+    static func run(kernel: URL, initrd: URL, helperRootfs: URL, targetDisk: URL,
+                    script body: String, logFile: URL, timeout: TimeInterval) throws {
+        let script = "mount -t proc proc /proc; mount -t sysfs sys /sys 2>/dev/null; mount -t tmpfs tmp /tmp; mount -t tmpfs run /run; "
+            + body + "; sleep 600"
         let cmdline = "console=hvc0 root=/dev/vda ro rootwait init=/bin/bash -- -c \"\(script)\""
 
         let cfg = VZVirtualMachineConfiguration()
@@ -38,8 +72,8 @@ final class PrepVM: NSObject, VZVirtualMachineDelegate {
         bl.commandLine = cmdline
         cfg.bootLoader = bl
         cfg.storageDevices = [
-            VZVirtioBlockDeviceConfiguration(attachment: try VZDiskImageStorageDeviceAttachment(url: helperRootfs, readOnly: true)),
-            VZVirtioBlockDeviceConfiguration(attachment: try VZDiskImageStorageDeviceAttachment(url: targetDisk, readOnly: false)),
+            VZVirtioBlockDeviceConfiguration(attachment: try DiskAttachment.readOnly(helperRootfs)),
+            VZVirtioBlockDeviceConfiguration(attachment: try DiskAttachment.readWrite(targetDisk)),
         ]
         FileManager.default.createFile(atPath: logFile.path, contents: nil)
         let logHandle = try FileHandle(forWritingTo: logFile)
@@ -74,11 +108,13 @@ final class PrepVM: NSObject, VZVirtualMachineDelegate {
             if prep.vm.canStop { prep.vm.stop { _ in stopped.signal() } } else { stopped.signal() }
         }
         _ = stopped.wait(timeout: .now() + 15)
+        // The next process to open this image must see everything the helper wrote.
+        DiskAttachment.flush(targetDisk)
         try? logHandle.close()
         if let failure = prep.failure { throw SharkError("helper VM failed: \(failure)") }
         switch outcome {
         case "ok": return
-        case "fail": throw SharkError("resize2fs failed inside the helper VM (see \(logFile.path))")
+        case "fail": throw SharkError("the helper script reported failure (see \(logFile.path))")
         case "panic": throw SharkError("helper VM kernel panicked (see \(logFile.path))")
         default: throw SharkError("helper VM did not finish within \(Int(timeout))s (see \(logFile.path))")
         }

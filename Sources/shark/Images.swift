@@ -30,6 +30,33 @@ enum Images {
         try FileManager.default.moveItem(atPath: part, toPath: dest.path)
     }
 
+    /// Delete a prepared image and the downloads it came from.
+    static func remove(_ d: Distro) throws {
+        let dir = cacheDir(d)
+        var freed: UInt64 = 0
+        for url in [dir] + d.files.map({ Paths.images.appendingPathComponent($0.name) }) {
+            guard fileExists(url) else { continue }
+            freed += directorySize(url)
+            try FileManager.default.removeItem(at: url)
+        }
+        Log.ok("Removed \(d.id) (\(formatBytes(freed)) freed)")
+    }
+
+    static func directorySize(_ url: URL) -> UInt64 {
+        var st = stat()
+        guard stat(url.path, &st) == 0 else { return 0 }
+        if st.st_mode & S_IFMT != S_IFDIR { return UInt64(st.st_blocks) * 512 }
+        let children = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []
+        return children.reduce(0) { $0 + directorySize($1) }
+    }
+
+    /// Bytes on disk for every prepared image plus its downloads.
+    static func size(_ d: Distro) -> UInt64 {
+        var total = directorySize(cacheDir(d))
+        for f in d.files { total += directorySize(Paths.images.appendingPathComponent(f.name)) }
+        return total
+    }
+
     static func isPrepared(_ d: Distro) -> Bool {
         fileExists(cacheDir(d).appendingPathComponent(".ready"))
     }

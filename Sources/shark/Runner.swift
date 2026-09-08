@@ -12,6 +12,11 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
     var ipTimer: DispatchSourceTimer?
     var consoleHandle: FileHandle?
     var proxy: VsockProxy?
+    var poweroffTimer: DispatchSourceTimer?
+    var lock: MachineLock?
+    /// Set when the console shows the guest finished its own shutdown, so a forced stop after that
+    /// still counts as clean — the filesystem was already unmounted.
+    var guestReachedPowerOff = false
 
     init(machine: Machine) {
         self.machine = machine
@@ -29,9 +34,18 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
         signal(SIGHUP, SIG_IGN)
         signal(SIGPIPE, SIG_IGN)
 
+        // Refuse to run a second VM on the same disk image.
+        guard let lock = MachineLock(machine) else {
+            log("another process already owns \(machine.name); refusing to start a second VM on the same disk")
+            machine.writeState("error")
+            exit(2)
+        }
+        self.lock = lock
+
         writeString("\(getpid())", to: machine.pidFile)
         machine.writeState("starting")
         try? FileManager.default.removeItem(at: machine.ipFile)
+        try? FileManager.default.removeItem(at: machine.cleanFlag)
 
         do {
             let config = try buildConfiguration()
@@ -102,8 +116,8 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
         }
 
         // Storage: root disk + cloud-init seed
-        let disk = try VZDiskImageStorageDeviceAttachment(url: machine.diskImage, readOnly: false)
-        let seed = try VZDiskImageStorageDeviceAttachment(url: machine.seedISO, readOnly: true)
+        let disk = try DiskAttachment.readWrite(machine.diskImage)
+        let seed = try DiskAttachment.readOnly(machine.seedISO)
         cfg.storageDevices = [
             VZVirtioBlockDeviceConfiguration(attachment: disk),
             VZVirtioBlockDeviceConfiguration(attachment: seed),
@@ -171,23 +185,82 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
             return
         }
         stopRequested = true
+        ipTimer?.cancel()          // never overwrite the recorded IP with stale data while shutting down
         machine.writeState("stopping")
-        do {
-            try vm.requestStop()
-            log("asked the guest to shut down")
-        } catch {
-            log("requestStop failed (\(error)); forcing")
-            forceStop()
-            return
-        }
-        queue.asyncAfter(deadline: .now() + 45) { [weak self] in
-            guard let self, self.vm.state != .stopped else { return }
-            self.log("guest did not stop within 45s; forcing")
-            self.forceStop()
+        // Ask the guest agent over vsock first. A VZ stop request is delivered as a virtual power-button
+        // press, and a busy Linux guest can ignore it entirely — which ends in a 45-second wait and a
+        // pulled plug, and that is what corrupts ext4. Talking to the agent is off the VM queue.
+        DispatchQueue.global().async { [weak self] in
+            let acked = self?.proxy?.powerOff() ?? false
+            self?.queue.async {
+                guard let self, self.vm.state != .stopped else { return }
+                if acked {
+                    self.log("guest agent is powering the machine off")
+                } else {
+                    do {
+                        try self.vm.requestStop()
+                        self.log("asked the guest to shut down (power button)")
+                    } catch {
+                        self.log("requestStop failed (\(error)); forcing")
+                        self.forceStop()
+                        return
+                    }
+                }
+                self.watchForStuckPowerOff()
+                // A guest that ignored the power button gets one more chance through the agent, then the plug.
+                self.queue.asyncAfter(deadline: .now() + 20) { [weak self] in
+                    guard let self, self.vm.state != .stopped, !acked else { return }
+                    self.log("no response to the power button; retrying through the guest agent")
+                    DispatchQueue.global().async { _ = self.proxy?.powerOff() }
+                }
+                self.queue.asyncAfter(deadline: .now() + 45) { [weak self] in
+                    guard let self, self.vm.state != .stopped else { return }
+                    self.log("guest did not stop within 45s; forcing")
+                    self.forceStop()
+                }
+            }
         }
     }
 
+    /// A guest whose root filesystem has gone read-only reaches poweroff.target, fails to exec
+    /// systemd-shutdown and then hangs forever. Watch the console for that so we can pull the plug
+    /// immediately instead of waiting out the full grace period — but never mistake the normal last
+    /// second of a healthy shutdown for a hang.
+    func watchForStuckPowerOff() {
+        let stuck = "Failed to execute shutdown binary"
+        let finished = ["reboot: Power down", "Reached target poweroff.target", "Power down"]
+        var finishedSince: Date?
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + 2, repeating: 2)
+        t.setEventHandler { [weak self] in
+            guard let self else { t.cancel(); return }
+            guard self.vm.state != .stopped else { t.cancel(); return }
+            let recent = tail(self.machine.consoleLog, lines: 10)
+            if recent.contains(stuck) {
+                t.cancel()
+                // Deliberately not marked clean: this happens when the root filesystem went
+                // read-only, so the next start should check it.
+                self.log("guest could not execute its shutdown binary; stopping the VM")
+                self.forceStop()
+                return
+            }
+            guard finished.contains(where: recent.contains) else { return }
+            // The guest says it is done. Give it a few seconds to actually go away on its own.
+            guard let since = finishedSince else { finishedSince = Date(); return }
+            guard Date().timeIntervalSince(since) >= 10 else { return }
+            t.cancel()
+            self.guestReachedPowerOff = true
+            self.log("guest powered off but the VM stayed up; stopping it")
+            self.forceStop()
+        }
+        t.resume()
+        poweroffTimer = t
+    }
+
     func forceStop() {
+        if guestReachedPowerOff {
+            writeString(ISO8601DateFormatter().string(from: Date()), to: machine.cleanFlag)
+        }
         guard vm.canStop else { cleanupAndExit(0) }
         log("force stopping VM")
         machine.writeState("stopping")
@@ -198,6 +271,8 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
     }
 
     func cleanupAndExit(_ code: Int32) -> Never {
+        ipTimer?.cancel()
+        poweroffTimer?.cancel()
         machine.writeState("stopped")
         try? FileManager.default.removeItem(at: machine.pidFile)
         try? consoleHandle?.close()
@@ -209,6 +284,8 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
 
     func guestDidStop(_ virtualMachine: VZVirtualMachine) {
         log("guest powered off")
+        // The guest shut itself down: its filesystem was unmounted properly.
+        writeString(ISO8601DateFormatter().string(from: Date()), to: machine.cleanFlag)
         cleanupAndExit(0)
     }
 
@@ -239,8 +316,10 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
         t.schedule(deadline: .now() + 1, repeating: 2)
         var stableRounds = 0
         var clockSynced = false
+        var haveAgentIP = false
         var lastClockPush = Date.distantPast
         t.setEventHandler { [unowned self] in
+            guard !self.stopRequested else { return }
             // Keep the guest clock right: VZ guests have no reliable RTC, and a wrong clock breaks TLS/apt.
             if !clockSynced || Date().timeIntervalSince(lastClockPush) > 30 {
                 if self.proxy?.pushClock() == true {
@@ -250,8 +329,12 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
                 }
             }
             var ip: String?
-            if let info = self.proxy?.guestInfo(), let v = info["ip"] as? String, !v.isEmpty { ip = v }
-            if ip == nil {
+            if let info = self.proxy?.guestInfo(), let v = info["ip"] as? String, !v.isEmpty {
+                ip = v
+                haveAgentIP = true
+            } else if !haveAgentIP {
+                // Only before the agent has ever answered: DHCP leases and console output can be stale
+                // (macOS keeps old leases keyed by hostname, and the console keeps the first boot's table).
                 ip = IPDiscovery.find(mac: self.machine.config.mac, name: self.machine.name, consoleLog: self.machine.consoleLog)
             }
             guard let ip else { return }

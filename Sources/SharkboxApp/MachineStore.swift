@@ -19,6 +19,9 @@ struct MachineInfo: Identifiable, Equatable {
     let created: Date
     let dir: URL
     let consoleLog: URL
+    let cleanShutdown: Bool
+
+    var distroTitle: String { Distro.find(distro)?.title ?? distro }
 
     var isRunning: Bool { state == "running" || state == "booting" }
     var isTransitioning: Bool { state == "starting" || state == "stopping" || state == "booting" }
@@ -77,6 +80,8 @@ final class MachineStore: ObservableObject {
     static let shared = MachineStore()
 
     @Published var machines: [MachineInfo] = []
+    @Published var images: [ImageInfo] = []
+    let settings = AppSettings()
     @Published var tasks: [CLITask] = []
     @Published var busy: Set<String> = []
     @Published var lastError: String?
@@ -87,7 +92,16 @@ final class MachineStore: ObservableObject {
         cliPath = MachineStore.findCLI()
         try? Paths.ensure()
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
+        refreshImages()
+        restartTimer()
+    }
+
+    func restartTimer() {
+        timer?.invalidate()
+        let interval = max(1, settings.refreshSeconds)
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            self?.refresh()
+        }
     }
 
     /// Prefer the installed CLI (so ssh_config / ProxyCommand paths stay consistent), else the bundled copy.
@@ -116,9 +130,23 @@ final class MachineStore: ObservableObject {
                 diskUsed: MachineStore.diskUsage(m.diskImage),
                 rosetta: m.config.rosetta, user: m.config.user,
                 isDefault: m.name == def, created: m.config.created,
-                dir: m.dir, consoleLog: m.consoleLog)
+                dir: m.dir, consoleLog: m.consoleLog,
+                cleanShutdown: fileExists(m.cleanFlag))
         }
-        if list != machines { machines = list }
+        if list != machines {
+            machines = list
+            refreshImages()
+        }
+    }
+
+    /// Free space on the volume holding the Sharkbox state directory.
+    var freeSpace: UInt64 {
+        let v = try? Paths.root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return UInt64(max(0, v?.volumeAvailableCapacityForImportantUsage ?? 0))
+    }
+
+    var stateSize: UInt64 {
+        Images.directorySize(Paths.machines) + Images.directorySize(Paths.images)
     }
 
     static func diskUsage(_ url: URL) -> UInt64 {
@@ -202,6 +230,9 @@ final class MachineStore: ObservableObject {
         return run(args, title: "Create \(name)", machine: name)
     }
 
+    var running: [MachineInfo] { machines.filter(\.isRunning) }
+    var stopped: [MachineInfo] { machines.filter { !$0.isRunning } }
+
     /// Open a Terminal window running `shark shell <name>` (via a .command file — no Automation permission needed).
     func openTerminal(_ name: String) {
         let dir = Paths.root.appendingPathComponent("terminal")
@@ -210,7 +241,7 @@ final class MachineStore: ObservableObject {
         let script = "#!/bin/sh\nclear\nexec \(shellQuote(cliPath)) shell \(shellQuote(name))\n"
         try? script.write(to: file, atomically: true, encoding: .utf8)
         try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
-        let terminal = UserDefaults.standard.string(forKey: "terminalApp") ?? "Terminal"
+        let terminal = settings.terminalApp
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         p.arguments = ["-a", terminal, file.path]
@@ -226,6 +257,50 @@ final class MachineStore: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([m.dir])
     }
 
+    // MARK: - Images
+
+    func refreshImages() {
+        let list = Distro.all.map { d in
+            ImageInfo(id: d.id, title: d.title, aliases: d.aliases.filter { $0 != d.id },
+                      boot: d.boot.rawValue, downloaded: Images.isPrepared(d),
+                      bytes: Images.isPrepared(d) ? Images.size(d) : 0,
+                      inUse: machines.contains { $0.distro == d.id })
+        }
+        if list != images { images = list }
+    }
+
+    func pullImage(_ id: String) {
+        run(["pull", id], title: "Download \(id)", machine: nil) { [weak self] _ in self?.refreshImages() }
+    }
+
+    func removeImage(_ id: String) {
+        run(["image", "rm", id], title: "Remove image \(id)", machine: nil) { [weak self] _ in self?.refreshImages() }
+    }
+
+    // MARK: - Maintenance
+
+    func fsck(_ name: String, repair: Bool) {
+        run(repair ? ["fsck", "--repair", name] : ["fsck", name],
+            title: (repair ? "Repair filesystem of " : "Check filesystem of ") + name, machine: name)
+    }
+
+    func setResources(_ name: String, cpus: Int?, memoryGB: Int?, diskGB: Int?) {
+        var args = ["set", name]
+        if let cpus { args += ["--cpus", "\(cpus)"] }
+        if let memoryGB { args += ["--memory", "\(memoryGB)g"] }
+        if let diskGB { args += ["--disk", "\(diskGB)g"] }
+        run(args, title: "Reconfigure \(name)", machine: name)
+    }
+
+    func installSSHConfig() {
+        run(["ssh-config", "--install"], title: "Install ssh config", machine: nil)
+    }
+
+    func copyToPasteboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
     /// Last ~64 KB of a console log, for the detail view.
     static func tailOfFile(_ url: URL, maxBytes: Int = 65536) -> String {
         guard let fh = try? FileHandle(forReadingFrom: url) else { return "" }
@@ -238,5 +313,73 @@ final class MachineStore: ObservableObject {
         if start > 0, let nl = s.firstIndex(of: "\n") { s = String(s[s.index(after: nl)...]) }
         // strip ANSI colour codes systemd prints on the console
         return s.replacingOccurrences(of: "\u{1B}\\[[0-9;]*m", with: "", options: .regularExpression)
+    }
+}
+
+
+// MARK: - Images
+
+struct ImageInfo: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let aliases: [String]
+    let boot: String
+    let downloaded: Bool
+    let bytes: UInt64
+    let inUse: Bool
+}
+
+// MARK: - Settings
+
+/// User preferences, stored in the standard defaults database so the CLI-free parts of the app
+/// and a future `shark` flag can read the same values.
+final class AppSettings: ObservableObject {
+    private let d = UserDefaults.standard
+
+    @Published var terminalApp: String { didSet { d.set(terminalApp, forKey: "terminalApp") } }
+    @Published var refreshSeconds: Double { didSet { d.set(refreshSeconds, forKey: "refreshSeconds") } }
+    @Published var confirmDestructive: Bool { didSet { d.set(confirmDestructive, forKey: "confirmDestructive") } }
+    @Published var menuBarShowsStopped: Bool { didSet { d.set(menuBarShowsStopped, forKey: "menuBarShowsStopped") } }
+    @Published var consoleLines: Double { didSet { d.set(consoleLines, forKey: "consoleLines") } }
+    @Published var defaultCPUs: Int { didSet { d.set(defaultCPUs, forKey: "defaultCPUs") } }
+    @Published var defaultMemoryGB: Int { didSet { d.set(defaultMemoryGB, forKey: "defaultMemoryGB") } }
+    @Published var defaultDiskGB: Int { didSet { d.set(defaultDiskGB, forKey: "defaultDiskGB") } }
+    @Published var defaultRosetta: Bool { didSet { d.set(defaultRosetta, forKey: "defaultRosetta") } }
+
+    static let knownTerminals = ["Terminal", "iTerm", "Ghostty", "WezTerm", "Alacritty", "kitty", "Warp"]
+
+    init() {
+        d.register(defaults: [
+            "terminalApp": "Terminal",
+            "refreshSeconds": 2.0,
+            "confirmDestructive": true,
+            "menuBarShowsStopped": true,
+            "consoleLines": 400.0,
+            "defaultCPUs": min(4, ProcessInfo.processInfo.activeProcessorCount),
+            "defaultMemoryGB": min(4, max(1, Int(ProcessInfo.processInfo.physicalMemory >> 30) / 4)),
+            "defaultDiskGB": 64,
+            "defaultRosetta": true,
+        ])
+        terminalApp = d.string(forKey: "terminalApp") ?? "Terminal"
+        refreshSeconds = d.double(forKey: "refreshSeconds")
+        confirmDestructive = d.bool(forKey: "confirmDestructive")
+        menuBarShowsStopped = d.bool(forKey: "menuBarShowsStopped")
+        consoleLines = d.double(forKey: "consoleLines")
+        defaultCPUs = d.integer(forKey: "defaultCPUs")
+        defaultMemoryGB = d.integer(forKey: "defaultMemoryGB")
+        defaultDiskGB = d.integer(forKey: "defaultDiskGB")
+        defaultRosetta = d.bool(forKey: "defaultRosetta")
+    }
+
+    /// Terminal apps that are actually installed, for the picker.
+    var availableTerminals: [String] {
+        let found = AppSettings.knownTerminals.filter { name in
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: "") != nil ? true : true
+        }.filter { name in
+            FileManager.default.fileExists(atPath: "/Applications/\(name).app")
+                || FileManager.default.fileExists(atPath: "/System/Applications/Utilities/\(name).app")
+                || FileManager.default.fileExists(atPath: "\(NSHomeDirectory())/Applications/\(name).app")
+        }
+        return found.contains(terminalApp) ? found : found + [terminalApp]
     }
 }

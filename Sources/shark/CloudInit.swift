@@ -101,7 +101,7 @@ enum CloudInit {
         files.append((path: "/usr/local/lib/sharkbox/agent.py", perms: "0755", content: guestAgentScript))
         files.append((path: "/etc/systemd/system/sharkbox-agent.service", perms: "0644", content: """
         [Unit]
-        Description=Sharkbox guest agent (ssh + info over virtio-vsock)
+        Description=Sharkbox guest agent (ssh, info, clock and power control over virtio-vsock)
         After=network.target ssh.service sshd.service
 
         [Service]
@@ -163,7 +163,7 @@ extension CloudInit {
     # Sharkbox guest agent - do not edit (managed by cloud-init)
     import json, socket, subprocess, sys, threading, time
 
-    SSH_PORT, INFO_PORT, CLOCK_PORT = 2222, 2223, 2224
+    SSH_PORT, INFO_PORT, CLOCK_PORT, CTRL_PORT = 2222, 2223, 2224, 2225
 
     def pump(src, dst):
         try:
@@ -231,6 +231,25 @@ extension CloudInit {
         finally:
             conn.close()
 
+    def handle_ctrl(conn):
+        # The host asks us to shut down here instead of relying on the virtual power button,
+        # which some guests never act on.
+        try:
+            cmd = conn.recv(64).strip()
+            if cmd in (b"poweroff", b"reboot"):
+                conn.sendall(b"ok\\n")
+                conn.close()
+                subprocess.Popen(["systemctl", "--no-block", cmd.decode()])
+                return
+            conn.sendall(b"err\\n")
+        except Exception as e:
+            print("ctrl error:", repr(e), file=sys.stderr, flush=True)
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
     def serve(port, handler):
         while True:
             try:
@@ -246,6 +265,7 @@ extension CloudInit {
 
     threading.Thread(target=serve, args=(INFO_PORT, handle_info), daemon=True).start()
     threading.Thread(target=serve, args=(CLOCK_PORT, handle_clock), daemon=True).start()
+    threading.Thread(target=serve, args=(CTRL_PORT, handle_ctrl), daemon=True).start()
     serve(SSH_PORT, handle_ssh)
     """
 }
