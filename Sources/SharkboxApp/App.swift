@@ -17,6 +17,7 @@ struct SharkboxApp: App {
         Window("New Machine", id: "new-machine") {
             NewMachineView().environmentObject(store)
         }
+        .defaultSize(width: 500, height: 380)
         .windowResizability(.contentSize)
 
         Window("About Sharkbox", id: "about") {

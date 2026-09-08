@@ -45,12 +45,41 @@ final class CLITask: ObservableObject, Identifiable {
     @Published var lines: [String] = []
     @Published var finished = false
     @Published var exitCode: Int32?
+    /// Set while a step reports machine-readable progress (currently image downloads).
+    @Published var progress: Progress?
+
+    struct Progress: Equatable {
+        var fraction: Double
+        var received: UInt64
+        var total: UInt64
+        var label: String
+
+        var caption: String {
+            let done = formatBytes(received)
+            guard total > 0 else { return done }
+            return "\(done) of \(formatBytes(total))"
+        }
+    }
 
     init(title: String, machine: String?) {
         self.title = title
         self.machine = machine
     }
+
     var succeeded: Bool { finished && exitCode == 0 }
+
+    /// Consume one output line. Progress reports drive the bar instead of scrolling past as text.
+    func absorb(_ line: String) {
+        guard line.hasPrefix("@@progress ") else {
+            let clean = line.replacingOccurrences(of: "\r", with: "")
+            if !clean.isEmpty { lines.append(clean) }
+            return
+        }
+        let f = line.split(separator: " ", maxSplits: 4).map(String.init)
+        guard f.count >= 4, let fraction = Double(f[1]), let received = UInt64(f[2]), let total = UInt64(f[3]) else { return }
+        progress = Progress(fraction: fraction, received: received, total: total,
+                            label: f.count > 4 ? f[4] : "")
+    }
 }
 
 /// Splits a byte stream into lines, thread-safe.
@@ -183,13 +212,14 @@ final class MachineStore: ObservableObject {
             let d = fh.availableData
             guard !d.isEmpty else { return }
             let lines = buffer.append(d)
-            if !lines.isEmpty { DispatchQueue.main.async { task.lines.append(contentsOf: lines) } }
+            if !lines.isEmpty { DispatchQueue.main.async { lines.forEach(task.absorb) } }
         }
         p.terminationHandler = { [weak self] proc in
             pipe.fileHandleForReading.readabilityHandler = nil
             let rest = buffer.append(pipe.fileHandleForReading.readDataToEndOfFile()) + buffer.flush()
             DispatchQueue.main.async {
-                task.lines.append(contentsOf: rest.filter { !$0.isEmpty })
+                rest.forEach(task.absorb)
+                task.progress = nil
                 task.finished = true
                 task.exitCode = proc.terminationStatus
                 if let machine { self?.busy.remove(machine) }

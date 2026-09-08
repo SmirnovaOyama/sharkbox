@@ -342,21 +342,24 @@ struct Glyph: View {
             ], weight: 1.7)
         case .ubuntu:
             var dots = Path()
+            var spokes = Path()
             for i in 0..<3 {
-                let a = Angle.degrees(Double(i) * 120 - 30).radians
-                dots.addEllipse(in: CGRect(x: 12 + cos(a) * 7.4 - 2.5, y: 12 + sin(a) * 7.4 - 2.5, width: 5, height: 5))
+                let a = Angle.degrees(Double(i) * 120 - 45).radians
+                let c = CGPoint(x: 12 + cos(a) * 8.8, y: 12 + sin(a) * 8.8)
+                dots.addEllipse(in: CGRect(x: c.x - 2.4, y: c.y - 2.4, width: 4.8, height: 4.8))
+                spokes.move(to: CGPoint(x: 12 + cos(a) * 3.4, y: 12 + sin(a) * 3.4))
+                spokes.addLine(to: CGPoint(x: 12 + cos(a) * 6.0, y: 12 + sin(a) * 6.0))
             }
             return Geometry(fills: [dots], strokes: [
-                path { p in p.addEllipse(in: CGRect(x: 8.4, y: 8.4, width: 7.2, height: 7.2)) },
-            ], weight: 2.0)
+                path { p in p.addEllipse(in: CGRect(x: 8.6, y: 8.6, width: 6.8, height: 6.8)) },
+                spokes,
+            ], weight: 1.7)
         case .debian:
-            return Geometry(strokes: [path { p in
-                p.addArc(center: .init(x: 12.6, y: 11.6), radius: 7.2,
-                         startAngle: .degrees(-40), endAngle: .degrees(250), clockwise: false)
-            }, path { p in
-                p.addArc(center: .init(x: 12.6, y: 11.6), radius: 3.6,
-                         startAngle: .degrees(30), endAngle: .degrees(300), clockwise: false)
-            }], weight: 2.0)
+            // A naruto swirl: outer ring plus the spiral cut through the middle.
+            return Geometry(strokes: [
+                path { p in p.addEllipse(in: CGRect(x: 2.6, y: 2.6, width: 18.8, height: 18.8)) },
+                spiral(turns: 2.35, from: 1.5, to: 7.3),
+            ], weight: 1.9)
         case .tux:
             return Geometry(fills: [path { p in
                 p.move(to: .init(x: 12, y: 2.6))
@@ -377,6 +380,19 @@ struct Glyph: View {
         var p = Path()
         build(&p)
         return p
+    }
+
+    /// An Archimedean spiral, sampled — the swirl inside the naruto mark.
+    static func spiral(turns: Double, from r0: Double, to r1: Double, steps: Int = 160) -> Path {
+        path { p in
+            for i in 0...steps {
+                let t = Double(i) / Double(steps)
+                let angle = t * turns * 2 * .pi - .pi / 2
+                let r = r0 + t * (r1 - r0)
+                let pt = CGPoint(x: 12 + cos(angle) * r, y: 12 + sin(angle) * r)
+                if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
+            }
+        }
     }
 
     static func finPath() -> Path {
@@ -411,14 +427,47 @@ struct DistroMark: View {
     var size: CGFloat = 16
     var color: Color = .primary
 
-    var body: some View {
-        Glyph(kind: kind, size: size, color: color)
+    /// Distros that are represented by an emoji rather than a drawn glyph.
+    private var emoji: String? {
+        distro.hasPrefix("debian") ? "🍥" : nil
     }
 
-    private var kind: Glyph.Kind {
-        if distro.hasPrefix("ubuntu") { return .ubuntu }
-        if distro.hasPrefix("debian") { return .debian }
-        return .tux
+    var body: some View {
+        if let emoji {
+            Image(nsImage: EmojiImage.of(emoji, size: size))
+                .frame(width: size, height: size)
+        } else {
+            Glyph(kind: distro.hasPrefix("ubuntu") ? .ubuntu : .tux, size: size, color: color)
+        }
+    }
+}
+
+/// Emoji drawn into an image of exactly the requested point size, centred on its own ink rather
+/// than on the font's line box. `Text` with a font size equal to the frame overflows and gets
+/// clipped, because an emoji's glyph box is taller and wider than its nominal point size.
+enum EmojiImage {
+    private static var cache: [String: NSImage] = [:]
+
+    static func of(_ emoji: String, size: CGFloat) -> NSImage {
+        let key = "\(emoji)@\(size)"
+        if let cached = cache[key] { return cached }
+        // Measure at a reference size, then pick the font size whose ink exactly fills the box.
+        let reference: CGFloat = 64
+        let probe = NSAttributedString(string: emoji, attributes: [.font: NSFont.systemFont(ofSize: reference)])
+        let probeInk = probe.boundingRect(with: NSSize(width: reference * 4, height: reference * 4),
+                                          options: [.usesLineFragmentOrigin, .usesDeviceMetrics])
+        let fontSize = size * reference / max(probeInk.width, probeInk.height)
+
+        let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+            let string = NSAttributedString(string: emoji, attributes: [.font: NSFont.systemFont(ofSize: fontSize)])
+            let ink = string.boundingRect(with: NSSize(width: size * 4, height: size * 4),
+                                          options: [.usesLineFragmentOrigin, .usesDeviceMetrics])
+            string.draw(at: NSPoint(x: rect.midX - ink.midX, y: rect.midY - ink.midY))
+            return true
+        }
+        image.isTemplate = false
+        cache[key] = image
+        return image
     }
 }
 

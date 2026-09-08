@@ -166,7 +166,8 @@ struct MachineRow: View {
             }
             Spacer(minLength: 4)
             if machine.isDefault {
-                Glyph(kind: .star, size: 10, color: .yellow)
+                Glyph(kind: .star, size: 11, color: .yellow)
+                    .help("Default machine")
             }
             StatusDot(machine: machine)
         }
@@ -234,8 +235,8 @@ struct StatusDot: View {
         } else {
             Circle()
                 .fill(machine.stateColor)
-                .frame(width: 8, height: 8)
-                .overlay(Circle().stroke(machine.stateColor.opacity(0.35), lineWidth: 3.5))
+                .frame(width: 9, height: 9)
+                .overlay(Circle().strokeBorder(.white.opacity(0.55), lineWidth: 1))
                 .frame(width: 12, height: 12)
         }
     }
@@ -512,12 +513,14 @@ struct MachineDetailView: View {
     }
 }
 
-/// Live output of one CLI invocation.
+/// Live output of one CLI invocation: a progress bar while a step reports progress, and the
+/// remaining output as a scrolling log.
 struct TaskOutputView: View {
     @ObservedObject var task: CLITask
+    var maxHeight: CGFloat = 170
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 if task.finished {
                     Glyph(kind: task.succeeded ? .check : .xmark, size: 13,
@@ -528,7 +531,28 @@ struct TaskOutputView: View {
                 Text(task.title).font(.headline)
                 Spacer()
             }
-            if !task.lines.isEmpty {
+
+            if let p = task.progress, !task.finished {
+                VStack(alignment: .leading, spacing: 4) {
+                    ProgressView(value: p.fraction)
+                        .progressViewStyle(.linear)
+                    HStack {
+                        Text(p.label.isEmpty ? "Downloading" : p.label)
+                            .lineLimit(1).truncationMode(.middle)
+                        Spacer()
+                        Text(p.caption).monospacedDigit()
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+
+            if let line = task.lines.last, !line.isEmpty, task.progress != nil, !task.finished {
+                Text(line)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else if !task.lines.isEmpty {
                 ScrollViewReader { proxy in
                     ScrollView {
                         VStack(alignment: .leading, spacing: 1) {
@@ -540,7 +564,7 @@ struct TaskOutputView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
                     }
-                    .frame(maxHeight: 170)
+                    .frame(maxHeight: maxHeight)
                     .background(Color(nsColor: .textBackgroundColor))
                     .clipShape(RoundedRectangle(cornerRadius: 7))
                     .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.secondary.opacity(0.3)))

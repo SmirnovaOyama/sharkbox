@@ -45,10 +45,12 @@ struct NewMachineView: View {
                 }
             }
             .formStyle(.grouped)
-            .frame(width: 480)
+            .frame(maxHeight: .infinity)
 
             if let task = f.task {
-                TaskOutputView(task: task).padding([.horizontal, .bottom], 16).frame(width: 480)
+                Divider()
+                TaskOutputView(task: task, maxHeight: 120)
+                    .padding(16)
             }
 
             Divider()
@@ -65,6 +67,7 @@ struct NewMachineView: View {
             }
             .padding(14)
         }
+        .frame(width: 500, height: f.task == nil ? 380 : 560)
         .onChange(of: f.distroID) { old, new in
             // Follow the distro with the default name unless the user typed their own.
             if f.name.isEmpty || f.name == Distro.find(old)?.family, let d = Distro.find(new) {
