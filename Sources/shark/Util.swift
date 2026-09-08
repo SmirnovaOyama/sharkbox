@@ -33,6 +33,11 @@ struct CommandResult {
 }
 
 /// Run a command, capturing its output.
+///
+/// Output is drained with `poll` rather than `readDataToEndOfFile`, because a grandchild that
+/// inherits the pipe keeps it open after the child exits: an `ssh` ProxyCommand outlives its `ssh`,
+/// and waiting for end-of-file on its stderr hangs forever. Reading stops once the child has exited
+/// and the pipes have been quiet for a moment, or when `timeout` expires.
 @discardableResult
 func sh(_ args: [String], input: String? = nil, cwd: URL? = nil, check: Bool = true, timeout: TimeInterval? = nil) throws -> CommandResult {
     let p = Process()
@@ -44,31 +49,64 @@ func sh(_ args: [String], input: String? = nil, cwd: URL? = nil, check: Bool = t
     p.standardError = errPipe
     p.standardInput = input == nil ? FileHandle.nullDevice : inPipe
 
-    var errData = Data()
-    let group = DispatchGroup()
-    group.enter()
-    DispatchQueue.global().async {
-        errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-        group.leave()
-    }
     try p.run()
     if let input {
         inPipe.fileHandleForWriting.write(input.data(using: .utf8)!)
         try? inPipe.fileHandleForWriting.close()
     }
+    // Drop our copies of the write ends, or the pipes can never report end-of-file.
+    try? outPipe.fileHandleForWriting.close()
+    try? errPipe.fileHandleForWriting.close()
+
+    let outFD = outPipe.fileHandleForReading.fileDescriptor
+    let errFD = errPipe.fileHandleForReading.fileDescriptor
+    for fd in [outFD, errFD] { _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK) }
+
+    var outData = Data(), errData = Data()
+    var open: Set<Int32> = [outFD, errFD]
+    var buffer = [UInt8](repeating: 0, count: 65536)
+    let deadline = timeout.map { Date().addingTimeInterval($0) }
     var timedOut = false
-    var watchdog: DispatchWorkItem?
-    if let timeout {
-        let w = DispatchWorkItem { if p.isRunning { timedOut = true; kill(p.processIdentifier, SIGKILL) } }
-        watchdog = w
-        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: w)
+    var exitedAt: Date?
+
+    while !open.isEmpty {
+        var fds = open.sorted().map { pollfd(fd: $0, events: Int16(POLLIN), revents: 0) }
+        let ready = poll(&fds, nfds_t(fds.count), 100)
+        if ready > 0 {
+            for entry in fds where entry.revents != 0 {
+                while true {
+                    let n = read(entry.fd, &buffer, buffer.count)
+                    if n > 0 {
+                        if entry.fd == outFD { outData.append(buffer, count: n) } else { errData.append(buffer, count: n) }
+                        continue
+                    }
+                    if n == 0 { open.remove(entry.fd) }
+                    else if errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR { open.remove(entry.fd) }
+                    break
+                }
+            }
+        }
+        if let deadline, Date() >= deadline {
+            timedOut = true
+            if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+            break
+        }
+        if !p.isRunning {
+            // The child is gone. Give anything it left behind a moment, then stop waiting for
+            // descriptors that some surviving grandchild is still holding open.
+            let since = exitedAt ?? Date()
+            exitedAt = since
+            if ready == 0 && Date().timeIntervalSince(since) > 0.3 { break }
+        }
     }
-    let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+
+    try? outPipe.fileHandleForReading.close()
+    try? errPipe.fileHandleForReading.close()
     p.waitUntilExit()
-    group.wait()
-    watchdog?.cancel()
+
     if timedOut {
-        return CommandResult(status: 124, stdout: String(decoding: outData, as: UTF8.self), stderr: "timed out after \(Int(timeout ?? 0))s")
+        return CommandResult(status: 124, stdout: String(decoding: outData, as: UTF8.self),
+                             stderr: "timed out after \(Int(timeout ?? 0))s")
     }
     let r = CommandResult(status: p.terminationStatus,
                           stdout: String(decoding: outData, as: UTF8.self),

@@ -192,11 +192,20 @@ enum VsockClient {
         let hello = "\(port)\n"
         _ = hello.withCString { write(fd, $0, hello.utf8.count) }
         signal(SIGPIPE, SIG_IGN)
-        Thread(block: {
-            VsockProxy.pump(from: 0, to: fd)
+
+        // Exit as soon as either direction ends. ssh keeps this process's stderr, so lingering here
+        // after ssh is gone leaves whoever launched ssh waiting on a pipe that never closes.
+        let ended = DispatchSemaphore(value: 0)
+        Thread {
+            VsockProxy.pump(from: 0, to: fd)     // ssh closed the transport: the session is over
             shutdown(fd, SHUT_WR)
-        }).start()
-        VsockProxy.pump(from: fd, to: 1)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2) { ended.signal() }
+        }.start()
+        Thread {
+            VsockProxy.pump(from: fd, to: 1)     // the guest hung up
+            ended.signal()
+        }.start()
+        ended.wait()
         exit(0)
     }
 }

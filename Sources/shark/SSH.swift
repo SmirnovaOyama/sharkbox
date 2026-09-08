@@ -30,7 +30,7 @@ enum SSHConfig {
             "-o", "LogLevel=ERROR",
             "-o", "ProxyCommand=\(proxyCommand(for: m))",
             "-o", "ControlMaster=auto",
-            "-o", "ControlPath=\(Paths.root.path)/cm-%C",
+            "-o", "ControlPath=\(muxPath(for: m))",
             "-o", "ControlPersist=120",
             "\(m.config.user)@\(m.name).shark",
         ]
@@ -42,9 +42,30 @@ enum SSHConfig {
             + ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
     }
 
-    /// Kill a lingering multiplex master for this machine (e.g. after the VM stopped).
+    /// The connection-multiplexing socket. The machine name is in the path so leftovers can be
+    /// identified and removed; without that, a socket from a previous run of the same machine makes
+    /// ssh print "ControlSocket already exists" and fall back to an unmultiplexed connection.
+    static func muxPath(for m: Machine) -> String {
+        "\(Paths.root.path)/cm-\(m.name)-%C"
+    }
+
+    /// Shut down a lingering multiplex master for this machine and clear its socket.
     static func closeMux(for m: Machine) {
-        _ = try? sh(["ssh", "-O", "exit", "-o", "ControlPath=\(Paths.root.path)/cm-%C", "\(m.config.user)@\(m.name).shark"], check: false, timeout: 5)
+        _ = try? sh(["ssh", "-O", "exit", "-o", "ControlPath=\(muxPath(for: m))",
+                     "\(m.config.user)@\(m.name).shark"], check: false, timeout: 5)
+        removeStaleMuxSockets(for: m)
+    }
+
+    /// Remove control sockets for this machine that no master is listening on any more.
+    static func removeStaleMuxSockets(for m: Machine) {
+        let fm = FileManager.default
+        let names = (try? fm.contentsOfDirectory(atPath: Paths.root.path)) ?? []
+        for name in names where name.hasPrefix("cm-\(m.name)-") {
+            let url = Paths.root.appendingPathComponent(name)
+            let alive = (try? sh(["ssh", "-O", "check", "-o", "ControlPath=\(url.path)",
+                                  "\(m.config.user)@\(m.name).shark"], check: false, timeout: 5))?.status == 0
+            if !alive { try? fm.removeItem(at: url) }
+        }
     }
 
     /// Regenerate ~/.sharkbox/ssh_config with a `Host <name>.shark` entry per machine.
@@ -56,6 +77,9 @@ enum SSHConfig {
             Host \(m.name).shark
               User \(m.config.user)
               ProxyCommand \(proxyCommand(for: m))
+              ControlMaster auto
+              ControlPath \(muxPath(for: m))
+              ControlPersist 120
               IdentityFile \(Paths.sshKey.path)
               IdentitiesOnly yes
               StrictHostKeyChecking no

@@ -112,6 +112,7 @@ enum Commands {
             return
         }
         checkAfterUncleanShutdown(m)
+        SSHConfig.removeStaleMuxSockets(for: m)
         try? FileManager.default.removeItem(at: m.stateFile)
         if !fileExists(m.runnerLog) { FileManager.default.createFile(atPath: m.runnerLog.path, contents: nil) }
         let logHandle = try FileHandle(forWritingTo: m.runnerLog)
@@ -150,6 +151,7 @@ enum Commands {
     static func waitReady(_ m: Machine, timeout: TimeInterval = 300) throws {
         let start = Date()
         var announced = false
+        var lastNote = Date()
         while Date().timeIntervalSince(start) < timeout {
             guard m.isRunning else {
                 throw SharkError("\(m.name) exited unexpectedly:\n" + tail(m.runnerLog, lines: 12)
@@ -173,6 +175,11 @@ enum Commands {
             if !announced && Date().timeIntervalSince(start) > 2 {
                 Log.info("Waiting for \(m.name) to boot…")
                 announced = true
+                lastNote = Date()
+            } else if announced && Date().timeIntervalSince(lastNote) > 15 {
+                // Say something periodically: a silent terminal for minutes reads as a hang.
+                Log.info("Still waiting for \(m.name) (\(Int(Date().timeIntervalSince(start)))s) — console: shark logs \(m.name)")
+                lastNote = Date()
             }
             usleep(700_000)
         }
