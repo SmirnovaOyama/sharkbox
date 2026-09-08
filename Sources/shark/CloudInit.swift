@@ -34,13 +34,13 @@ enum CloudInit {
         var runcmd: [String] = [
             "systemctl daemon-reload",
             "systemctl enable --now mnt-mac.mount || true",
-            "systemctl enable --now orbshark-agent.service || true",
+            "systemctl enable --now sharkbox-agent.service || true",
             "mkdir -p /Users && ln -sfn /mnt/mac /Users/\(c.user)",
         ]
 
         files.append((path: "/etc/systemd/system/mnt-mac.mount", perms: "0644", content: """
         [Unit]
-        Description=macOS home directory (OrbShark)
+        Description=macOS home directory (Sharkbox)
 
         [Mount]
         What=mac
@@ -55,7 +55,7 @@ enum CloudInit {
         if c.rosetta {
             files.append((path: "/etc/systemd/system/mnt-rosetta.mount", perms: "0644", content: """
             [Unit]
-            Description=Rosetta x86_64 translator share (OrbShark)
+            Description=Rosetta x86_64 translator share (Sharkbox)
 
             [Mount]
             What=rosetta
@@ -66,7 +66,7 @@ enum CloudInit {
             [Install]
             WantedBy=multi-user.target
             """))
-            files.append((path: "/usr/local/lib/orbshark/rosetta-binfmt.sh", perms: "0755", content: """
+            files.append((path: "/usr/local/lib/sharkbox/rosetta-binfmt.sh", perms: "0755", content: """
             #!/bin/sh
             # Register Rosetta as the x86_64 ELF interpreter (retries: the share can be slow to settle at boot).
             magic=':rosetta:M::\\x7fELF\\x02\\x01\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x02\\x00\\x3e\\x00:\\xff\\xff\\xff\\xff\\xff\\xfe\\xfe\\x00\\xff\\xff\\xff\\xff\\xff\\xff\\xff\\xff\\xfe\\xff\\xff\\xff:/mnt/rosetta/rosetta:OCF'
@@ -83,14 +83,14 @@ enum CloudInit {
             """))
             files.append((path: "/etc/systemd/system/rosetta-binfmt.service", perms: "0644", content: """
             [Unit]
-            Description=Register Rosetta as the x86_64 ELF interpreter (OrbShark)
+            Description=Register Rosetta as the x86_64 ELF interpreter (Sharkbox)
             Requires=mnt-rosetta.mount
             After=mnt-rosetta.mount proc-sys-fs-binfmt_misc.automount
 
             [Service]
             Type=oneshot
             RemainAfterExit=yes
-            ExecStart=/usr/local/lib/orbshark/rosetta-binfmt.sh
+            ExecStart=/usr/local/lib/sharkbox/rosetta-binfmt.sh
 
             [Install]
             WantedBy=multi-user.target
@@ -98,15 +98,15 @@ enum CloudInit {
             runcmd.append("systemctl enable --now mnt-rosetta.mount rosetta-binfmt.service || true")
         }
 
-        files.append((path: "/usr/local/lib/orbshark/agent.py", perms: "0755", content: guestAgentScript))
-        files.append((path: "/etc/systemd/system/orbshark-agent.service", perms: "0644", content: """
+        files.append((path: "/usr/local/lib/sharkbox/agent.py", perms: "0755", content: guestAgentScript))
+        files.append((path: "/etc/systemd/system/sharkbox-agent.service", perms: "0644", content: """
         [Unit]
-        Description=OrbShark guest agent (ssh + info over virtio-vsock)
+        Description=Sharkbox guest agent (ssh + info over virtio-vsock)
         After=network.target ssh.service sshd.service
 
         [Service]
         ExecStartPre=-/sbin/modprobe vmw_vsock_virtio_transport
-        ExecStart=/usr/bin/python3 /usr/local/lib/orbshark/agent.py
+        ExecStart=/usr/bin/python3 /usr/local/lib/sharkbox/agent.py
         Restart=always
         RestartSec=1
 
@@ -115,7 +115,7 @@ enum CloudInit {
         """))
 
         files.append((path: "/etc/motd", perms: "0644", content: """
-        OrbShark machine "\(m.name)" (\(c.distro))
+        Sharkbox machine "\(m.name)" (\(c.distro))
           Your Mac home directory is at /mnt/mac (also /Users/\(c.user))
 
         """))
@@ -149,7 +149,7 @@ enum CloudInit {
         }
         y += "runcmd:\n"
         for cmd in runcmd { y += "  - \(shellQuote(cmd) == cmd ? cmd : "\"" + cmd.replacingOccurrences(of: "\"", with: "\\\"") + "\"")\n" }
-        y += "final_message: \"OrbShark: cloud-init finished after $UPTIME seconds\"\n"
+        y += "final_message: \"Sharkbox: cloud-init finished after $UPTIME seconds\"\n"
         return y
     }
 }
@@ -160,7 +160,7 @@ extension CloudInit {
     /// so the host can reach the machine even when a VPN/proxy on the Mac captures TCP traffic.
     static let guestAgentScript = """
     #!/usr/bin/env python3
-    # OrbShark guest agent - do not edit (managed by cloud-init)
+    # Sharkbox guest agent - do not edit (managed by cloud-init)
     import json, socket, subprocess, sys, threading, time
 
     SSH_PORT, INFO_PORT, CLOCK_PORT = 2222, 2223, 2224

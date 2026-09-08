@@ -1,4 +1,4 @@
-// Renders the OrbShark app icon (blue rounded square, white shark fin) into an .iconset directory.
+// Renders the Sharkbox app icon (blue rounded square, white shark fin) into an .iconset directory.
 import AppKit
 
 let outDir = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "icon.iconset"

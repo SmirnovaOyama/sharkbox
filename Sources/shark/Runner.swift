@@ -5,7 +5,7 @@ import Virtualization
 /// Spawned by `shark start` as `shark __runner <name>`.
 final class VMRunner: NSObject, VZVirtualMachineDelegate {
     let machine: Machine
-    let queue = DispatchQueue(label: "com.orbshark.vm")
+    let queue = DispatchQueue(label: "com.sharkbox.vm")
     var vm: VZVirtualMachine!
     var stopRequested = false
     var signalSources: [DispatchSourceSignal] = []
@@ -235,7 +235,7 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
 
     func startIPWatcher() {
         // Poll off the VM queue: the vsock query blocks while waiting for the guest.
-        let t = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "com.orbshark.ipwatch"))
+        let t = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "com.sharkbox.ipwatch"))
         t.schedule(deadline: .now() + 1, repeating: 2)
         var stableRounds = 0
         var clockSynced = false

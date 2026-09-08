@@ -2,7 +2,7 @@ import Foundation
 
 enum Paths {
     static let home = URL(fileURLWithPath: NSHomeDirectory())
-    static let root = home.appendingPathComponent(".orbshark")
+    static let root = home.appendingPathComponent(".sharkbox")
     static let machines = root.appendingPathComponent("machines")
     static let images = root.appendingPathComponent("images")
     static let sshKey = root.appendingPathComponent("id_ed25519")

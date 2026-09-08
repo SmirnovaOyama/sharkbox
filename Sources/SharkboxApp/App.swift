@@ -3,12 +3,12 @@ import AppKit
 import ServiceManagement
 
 @main
-struct OrbSharkApp: App {
+struct SharkboxApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var store = MachineStore.shared
 
     var body: some Scene {
-        Window("OrbShark", id: "main") {
+        Window("Sharkbox", id: "main") {
             MainView().environmentObject(store)
         }
         .defaultSize(width: 900, height: 600)
@@ -32,7 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-        if ProcessInfo.processInfo.environment["ORBSHARK_DEBUG_WINDOWS"] != nil {
+        if ProcessInfo.processInfo.environment["SHARKBOX_DEBUG_WINDOWS"] != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                 for w in NSApp.windows {
                     NSLog("window: %@ frame=%@ visible=%d title=%@", String(describing: type(of: w)),

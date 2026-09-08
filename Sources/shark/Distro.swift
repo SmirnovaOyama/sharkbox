@@ -6,7 +6,7 @@ enum BootMode: String, Codable {
 }
 
 struct RemoteFile {
-    let name: String   // file name inside ~/.orbshark/images
+    let name: String   // file name inside ~/.sharkbox/images
     let url: String
 }
 

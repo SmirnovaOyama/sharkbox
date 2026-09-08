@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// View-local state lives in small ObservableObjects: the macOS 26+ SDK implements `@State` as a
-/// compiler macro whose plugin only ships with Xcode, and OrbShark builds with the Command Line Tools.
+/// compiler macro whose plugin only ships with Xcode, and Sharkbox builds with the Command Line Tools.
 final class MainUIState: ObservableObject {
     @Published var selection: String?
 }
@@ -42,7 +42,7 @@ struct MainView: View {
                     Image(nsImage: MenuBarIcon.image).resizable().frame(width: 54, height: 48).foregroundStyle(.secondary)
                     Text("Select a machine").foregroundStyle(.secondary)
                     if !store.cliInstalled {
-                        Text("The `shark` CLI was not found at \(store.cliPath). Run `make install` in the OrbShark folder.")
+                        Text("The `shark` CLI was not found at \(store.cliPath). Run `make install` in the Sharkbox folder.")
                             .font(.caption).foregroundStyle(.red).multilineTextAlignment(.center).padding(.horizontal, 40)
                     }
                 }

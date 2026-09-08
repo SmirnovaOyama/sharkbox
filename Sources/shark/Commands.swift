@@ -365,7 +365,7 @@ enum Commands {
 
         SSHConfig.update()
         if try SSHConfig.install() {
-            Log.ok("Added `\(SSHConfig.includeLine)` to ~/.ssh/config (backup: ~/.ssh/config.orbshark-backup)")
+            Log.ok("Added `\(SSHConfig.includeLine)` to ~/.ssh/config (backup: ~/.ssh/config.sharkbox-backup)")
         }
         let host = "ssh://\(m.name).shark"
         let dockerCLI = try sh(["sh", "-c", "command -v docker"], check: false)
@@ -378,7 +378,7 @@ enum Commands {
         if exists {
             try sh(["docker", "context", "update", m.name, "--docker", "host=\(host)"])
         } else {
-            try sh(["docker", "context", "create", m.name, "--description", "OrbShark machine \(m.name)", "--docker", "host=\(host)"])
+            try sh(["docker", "context", "create", m.name, "--description", "Sharkbox machine \(m.name)", "--docker", "host=\(host)"])
         }
         let test = try sh(["docker", "--context", m.name, "version", "--format", "{{.Server.Version}}"], check: false, timeout: 60)
         if test.status == 0 {

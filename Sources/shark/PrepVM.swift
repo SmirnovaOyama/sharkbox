@@ -5,7 +5,7 @@ import Virtualization
 /// distro's own userland) before the machine ever boots. Avoids the guest kernel's online-resize path,
 /// which corrupts ext4 on some kernels (Ubuntu 24.04's 6.8 when growing 2G → 64G).
 final class PrepVM: NSObject, VZVirtualMachineDelegate {
-    let queue = DispatchQueue(label: "com.orbshark.prep")
+    let queue = DispatchQueue(label: "com.sharkbox.prep")
     let done = DispatchSemaphore(value: 0)
     var vm: VZVirtualMachine!
     var failure: Error?
@@ -26,7 +26,7 @@ final class PrepVM: NSObject, VZVirtualMachineDelegate {
         }
         // The host watches the console for the marker and then stops the VM itself, so nothing here
         // depends on poweroff working inside a bare init; the trailing sleep keeps PID 1 alive meanwhile.
-        script += "e2fsck -f -p \(dev); if resize2fs -f \(dev); then sync; echo ORBSHARK_PREP_OK; else echo ORBSHARK_PREP_FAIL; fi; sleep 600"
+        script += "e2fsck -f -p \(dev); if resize2fs -f \(dev); then sync; echo SHARKBOX_PREP_OK; else echo SHARKBOX_PREP_FAIL; fi; sleep 600"
         let cmdline = "console=hvc0 root=/dev/vda ro rootwait init=/bin/bash -- -c \"\(script)\""
 
         let cfg = VZVirtualMachineConfiguration()
@@ -64,8 +64,8 @@ final class PrepVM: NSObject, VZVirtualMachineDelegate {
         while Date() < deadline {
             if prep.done.wait(timeout: .now() + 0.3) == .success { break }   // VM stopped/failed early
             let log = (try? String(contentsOf: logFile, encoding: .utf8)) ?? ""
-            if log.contains("ORBSHARK_PREP_OK") { outcome = "ok"; break }
-            if log.contains("ORBSHARK_PREP_FAIL") { outcome = "fail"; break }
+            if log.contains("SHARKBOX_PREP_OK") { outcome = "ok"; break }
+            if log.contains("SHARKBOX_PREP_FAIL") { outcome = "fail"; break }
             if log.contains("Kernel panic") { outcome = "panic"; break }
         }
         // Stop the helper (it never powers itself off).

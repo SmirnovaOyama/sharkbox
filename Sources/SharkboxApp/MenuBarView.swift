@@ -14,10 +14,10 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Image(nsImage: MenuBarIcon.image)
-                Text("OrbShark").font(.headline)
+                Text("Sharkbox").font(.headline)
                 Spacer()
                 Button { openMain() } label: { Image(systemName: "macwindow") }
-                    .buttonStyle(.borderless).help("Open the OrbShark window")
+                    .buttonStyle(.borderless).help("Open the Sharkbox window")
             }
             .padding(.bottom, 4)
             Divider()
@@ -38,7 +38,7 @@ struct MenuBarView: View {
             }
             .buttonStyle(.borderless)
 
-            Toggle("Start OrbShark at login", isOn: $ui.loginItem)
+            Toggle("Start Sharkbox at login", isOn: $ui.loginItem)
                 .toggleStyle(.checkbox)
                 .onChange(of: ui.loginItem) { _, on in
                     if on != LoginItem.enabled { LoginItem.set(on); ui.loginItem = LoginItem.enabled }
@@ -46,7 +46,7 @@ struct MenuBarView: View {
                 .padding(.top, 2)
 
             Divider()
-            Button("Quit OrbShark") { NSApp.terminate(nil) }.buttonStyle(.borderless)
+            Button("Quit Sharkbox") { NSApp.terminate(nil) }.buttonStyle(.borderless)
         }
         .padding(12)
         .frame(width: 320)

@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 import AppKit
 
-/// A snapshot of one machine, read from ~/.orbshark/machines/<name>/.
+/// A snapshot of one machine, read from ~/.sharkbox/machines/<name>/.
 struct MachineInfo: Identifiable, Equatable {
     var id: String { name }
     let name: String

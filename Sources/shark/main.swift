@@ -3,12 +3,12 @@ import Foundation
 let version = "0.1.0"
 
 let usageText = """
-OrbShark \(version) — free Linux machines on macOS (an OrbStack-style CLI on Apple Virtualization.framework)
+Sharkbox \(version) — free Linux machines on macOS, built on Apple Virtualization.framework
 
 USAGE
   shark                          shell into the default machine
   shark <name> [cmd...]          shell into / run a command in <name>
-  shark -m <name> [cmd...]       same, OrbStack style
+  shark -m <name> [cmd...]       same thing, flag form
 
 MACHINES
   shark create <distro> [name]   create (and start) a machine    e.g. shark create ubuntu
@@ -26,7 +26,7 @@ USING MACHINES
   shark shell <name>             interactive login shell (alias: ssh)
   shark run <name> <cmd...>      run a command (stdin/stdout are piped)
   shark docker <name>            install Docker inside <name> and point the Mac `docker` CLI at it
-  shark ssh-config [--install]   write ~/.orbshark/ssh_config so `ssh <name>.shark` works
+  shark ssh-config [--install]   write ~/.sharkbox/ssh_config so `ssh <name>.shark` works
 
 IMAGES
   shark images                   list available distros
@@ -34,7 +34,7 @@ IMAGES
 
 Inside a machine your Mac home directory is mounted at /mnt/mac (and /Users/<you>).
 `shark` run from a folder under your home drops you into the same folder in Linux.
-Data lives in ~/.orbshark.
+Data lives in ~/.sharkbox.
 """
 
 struct Parsed {
@@ -213,7 +213,7 @@ func main() throws {
         print(usageText)
 
     case "version", "-v", "--version":
-        print("OrbShark \(version)")
+        print("Sharkbox \(version)")
 
     default:
         if Machine.exists(cmd) {

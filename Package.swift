@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "orbshark",
+    name: "sharkbox",
     platforms: [.macOS(.v14)],
     targets: [
         .executableTarget(
