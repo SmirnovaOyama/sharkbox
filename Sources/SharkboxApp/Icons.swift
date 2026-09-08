@@ -448,15 +448,19 @@ struct DistroMark: View {
 enum EmojiImage {
     private static var cache: [String: NSImage] = [:]
 
+    /// How much of the box the ink covers. The drawn glyphs sit on a 24-point grid with roughly two
+    /// points of margin, so an emoji scaled to the full box would read as noticeably heavier.
+    static let inkCoverage: CGFloat = 0.82
+
     static func of(_ emoji: String, size: CGFloat) -> NSImage {
         let key = "\(emoji)@\(size)"
         if let cached = cache[key] { return cached }
-        // Measure at a reference size, then pick the font size whose ink exactly fills the box.
+        // Measure at a reference size, then pick the font size whose ink covers the intended fraction.
         let reference: CGFloat = 64
         let probe = NSAttributedString(string: emoji, attributes: [.font: NSFont.systemFont(ofSize: reference)])
         let probeInk = probe.boundingRect(with: NSSize(width: reference * 4, height: reference * 4),
                                           options: [.usesLineFragmentOrigin, .usesDeviceMetrics])
-        let fontSize = size * reference / max(probeInk.width, probeInk.height)
+        let fontSize = size * inkCoverage * reference / max(probeInk.width, probeInk.height)
 
         let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
             let string = NSAttributedString(string: emoji, attributes: [.font: NSFont.systemFont(ofSize: fontSize)])
