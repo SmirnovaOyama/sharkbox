@@ -133,6 +133,18 @@ final class VsockProxy {
         return n > 0 && buf[0] == UInt8(ascii: "o")
     }
 
+    /// Ask the guest agent to shut the machine down cleanly (vsock port 2225).
+    /// Returns true when the agent acknowledged. Must NOT be called on the VM queue.
+    func powerOff() -> Bool {
+        guard let conn = connectGuest(port: 2225, timeout: 5) else { return false }
+        defer { conn.close() }
+        let msg = "poweroff\n"
+        _ = msg.withCString { write(conn.fileDescriptor, $0, msg.utf8.count) }
+        var buf = [UInt8](repeating: 0, count: 8)
+        let n = read(conn.fileDescriptor, &buf, buf.count)
+        return n > 0 && buf[0] == UInt8(ascii: "o")
+    }
+
     static func pump(from src: Int32, to dst: Int32) {
         var buf = [UInt8](repeating: 0, count: 65536)
         while true {

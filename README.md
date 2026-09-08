@@ -16,14 +16,22 @@ ubuntu *  ubuntu:24.04  running  192.168.64.2  4    2G   64G (1.9G used)
 
 ## GUI
 
-`make install` 同时会把 **Sharkbox.app** 装到 `/Applications`。它是原生 SwiftUI 应用：
+`make install` 同时会把 **Sharkbox.app** 装到 `/Applications`。原生 SwiftUI，图标全部由代码绘制
+（`Sources/SharkboxApp/Icons.swift`，24×24 网格上的矢量路径），不依赖 SF Symbols。
 
-- 菜单栏图标：一眼看到每台机器的状态和 IP，一键启动/停止、打开终端、新建机器，可设置开机自启。
-- 主窗口：左侧机器列表，右侧详情（资源、IP、SSH 地址、目录）、操作按钮（启动/停止/重启/打开终端/装 Docker/设为默认/删除）、实时控制台日志。
-- 新建机器窗口：选发行版、名字、CPU/内存/磁盘、Rosetta 开关，创建过程的输出实时显示。
+- **菜单栏**：每台机器的状态、IP、启动/停止/终端按钮；右侧箭头展开二级菜单（复制 ▸ SSH 命令 / IP / 路径，
+  维护 ▸ 装 Docker / 检查文件系统 / 修复 / 强制停止）。底部齿轮菜单里有镜像的三级菜单和开机自启开关。
+- **主窗口**：侧栏按"运行中 / 已停止"分组、带搜索过滤，底部显示占用和剩余空间；右侧详情分三个标签页 ——
+  概览（资源卡片、信息表、上次非正常关机的提示）、控制台（跟随滚动、复制、打开日志文件）、
+  资源（停机时可改 CPU / 内存 / 磁盘，磁盘只能扩大）。
+- **应用主菜单**：`Machine` 下每个动作都是子菜单并直接列出所有机器（启动 ▸ ubuntu），
+  维护类动作再往下一层；`Images` 菜单里每个发行版一个子菜单。
+- **设置**（⌘,）：终端应用、刷新间隔、控制台缓冲、删除确认、开机自启；新建机器的默认配置；
+  镜像管理（下载 / 删除 / 占用）；存储用量。
+- **新建机器窗口**：发行版、名字、CPU/内存/磁盘、Rosetta，创建过程输出实时显示。
 
-GUI 只是 `shark` 命令的前端：所有操作都是调用 `/opt/homebrew/bin/shark`（App 里也自带一份），状态直接读 `~/.sharkbox`。
-"打开终端"会用 Terminal.app 打开 `shark shell <name>`；想换 iTerm 之类的：`defaults write dev.sharkbox.app terminalApp iTerm`。
+GUI 只是 `shark` 的前端：所有操作都调用 `/opt/homebrew/bin/shark`（App 内也自带一份），状态直接读 `~/.sharkbox`。
+"打开终端"默认用 Terminal.app 跑 `shark shell <name>`，可在设置里换成 iTerm、Ghostty 等已安装的终端。
 
 ## 要求
 
@@ -55,6 +63,9 @@ shark delete [-f] <name>       删除机器及其磁盘
 shark info <name>              配置、路径、IP
 shark ip <name>                打印机器 IP
 shark logs [-f] <name>         看串口控制台日志（排查启动问题）
+shark fsck [--repair] <name>   检查/修复已停止机器的根文件系统（在辅助 VM 里跑 e2fsck）
+shark set <name> --cpus 4 --memory 4g --disk 128g
+                               改已停止机器的配置（磁盘只能扩大，会离线扩容文件系统）
 shark default [name]           查看 / 设置默认机器
 
 shark shell <name>             交互式登录 shell
@@ -64,6 +75,7 @@ shark ssh-config [--install]   生成 ~/.sharkbox/ssh_config，之后可以直�
 
 shark images                   可用发行版
 shark pull <distro>            提前下载镜像
+shark image rm <distro>        删除缓存的镜像（已创建的机器不受影响）
 ```
 
 支持的发行版：`ubuntu`（24.04）、`ubuntu:22.04`、`debian`（13）、`debian:12`。镜像来自各发行版官方的 cloud image。
@@ -88,6 +100,7 @@ shark pull <distro>            提前下载镜像
 | Docker | 内置引擎 | `shark docker` 在机器里装 Docker Engine，Mac 上的 docker CLI（`brew install docker`，或 OrbStack 自带的 `/Applications/OrbStack.app/Contents/MacOS/xbin/docker`）通过 ssh context 连过去 |
 | GUI、菜单栏 | ✓ | ✓ |
 | Kubernetes | ✓ | ✗ |
+| 文件系统检查/修复 | — | `shark fsck`，非正常关机后自动执行 |
 | 内存动态回收、`*.orb.local` 域名 | ✓ | ✗ |
 
 ## 工作原理
@@ -98,7 +111,22 @@ shark pull <distro>            提前下载镜像
 - **SSH 不走 TCP，走 virtio-vsock**：guest agent 把 sshd 暴露在 vsock 上，runner 进程把它变成 Unix socket，
   `ssh` 通过 `ProxyCommand=shark __proxy <name>` 接进去。这样 Mac 上开着 VPN / 代理（比如 Shadowrocket 的 TUN 模式会截获所有 TCP）也照样能连。
 - 扩容根分区不在 guest 里在线做（Ubuntu 24.04 的 6.8 内核在线扩到 64G 会把 ext4 搞坏），
-  而是创建时先起一个 2 秒的辅助 VM 离线跑 `e2fsck + resize2fs`。
+  而是创建时先起一个 2 秒的辅助 VM 离线跑 `e2fsck + resize2fs`。同一套辅助 VM 也用来实现 `shark fsck` 和 `shark set --disk`。
+- **关机走 guest agent，不靠虚拟电源键**：`vm.requestStop()` 只是按一下电源键，忙碌的 Linux 可能完全不理会，
+  等 45 秒被强制断电正是 ext4 损坏的源头。现在先通过 vsock 让 agent 执行 `systemctl poweroff`，电源键只作兜底；
+  同时盯着串口，guest 说自己关完了却没退出（根分区只读时会卡死在这一步）就立刻收尾。
+- **每台机器一把排他锁**：两个 VM 同时打开同一个 raw ext4 镜像会在几秒内毁掉文件系统，所以 runner 启动前先 `flock`，
+  `fsck` 和扩容也要拿同一把锁。
+- **所有进程用同一套磁盘缓存策略**（uncached + full sync，进程间切换时再 `F_FULLFSYNC`）：
+  runner 和辅助 VM 各用默认策略打开同一个镜像时，主机页缓存不一致，扩容或 fsck 之后的那次启动会读到旧数据块，
+  ext4 直接报 checksum invalid。
+- **非正常关机后自动检查**：干净关机会写一个标记文件；下次启动若标记不在，就先在辅助 VM 里跑 `e2fsck -p`
+  （物理机开机做的事），preen 修不了的会自动升级成完整修复，避免损坏一次次累积。
+
+## 磁盘空间
+
+机器磁盘是稀疏文件：`--disk 64g` 不会立刻占 64 GB，用多少占多少。但 Mac 真写满时 guest 文件系统可能损坏，
+所以 `shark create` 在剩余空间不足时会提示。主窗口底部和设置里的"存储"页都能看到当前占用和剩余。
 
 ## 已知限制
 

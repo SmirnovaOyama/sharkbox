@@ -37,6 +37,11 @@ enum Commands {
             created: Date(),
             kernelArgs: nil
         )
+        if let free = freeSpace(Paths.root), cfg.diskBytes > free {
+            Log.warn("this Mac has \(formatBytes(free)) free but the machine is configured for \(formatBytes(cfg.diskBytes)). " +
+                     "The image only grows as it fills up, so this works — but if the Mac runs out of space the guest " +
+                     "filesystem can be damaged. Consider --disk \(max(8, Int(free / (1 << 30)) / 2))g.")
+        }
         let m = Machine(name: name, config: cfg)
         Log.info("Creating \(Log.bold(name)) — \(distro.title), \(cfg.cpus) CPU, \(formatBytes(cfg.memoryMB << 20)) RAM, \(formatBytes(cfg.diskBytes)) disk")
         try FileManager.default.createDirectory(at: m.dir, withIntermediateDirectories: true)
@@ -59,6 +64,7 @@ enum Commands {
                         Log.warn("offline resize failed (\(error)); the guest will resize itself on first boot instead")
                     }
                 }
+                writeString("created", to: m.cleanFlag)
             }
             let pub = try SSHKeys.publicKey()
             try CloudInit.buildSeed(for: m, publicKey: pub)
@@ -84,6 +90,12 @@ enum Commands {
         return u
     }
 
+    /// Space actually available to us on the volume holding `url`.
+    static func freeSpace(_ url: URL) -> UInt64? {
+        let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return (values?.volumeAvailableCapacityForImportantUsage).map { UInt64(max(0, $0)) }
+    }
+
     static func grow(_ url: URL, to bytes: UInt64) throws {
         let fh = try FileHandle(forWritingTo: url)
         defer { try? fh.close() }
@@ -99,6 +111,7 @@ enum Commands {
             if wait { try waitReady(m); Log.ok("\(m.name) is up" + (m.ip.map { " at \($0)" } ?? "")) }
             return
         }
+        checkAfterUncleanShutdown(m)
         try? FileManager.default.removeItem(at: m.stateFile)
         if !fileExists(m.runnerLog) { FileManager.default.createFile(atPath: m.runnerLog.path, contents: nil) }
         let logHandle = try FileHandle(forWritingTo: m.runnerLog)
@@ -119,6 +132,10 @@ enum Commands {
             let st = readString(m.stateFile)
             if st == "running" { break }
             if st == "error" || (st != nil && !m.isRunning) {
+                throw SharkError("\(m.name) failed to start:\n" + tail(m.runnerLog, lines: 12))
+            }
+            if readString(m.pidFile) == nil && Date().timeIntervalSince(deadline) > -27 {
+                // the runner exited before it even claimed the machine (e.g. the lock was taken)
                 throw SharkError("\(m.name) failed to start:\n" + tail(m.runnerLog, lines: 12))
             }
             usleep(150_000)
@@ -330,6 +347,139 @@ enum Commands {
         if follow { args.append("-f") }
         args.append(m.consoleLog.path)
         execReplace(args)
+    }
+
+    // MARK: - offline maintenance (helper VM)
+
+    /// A kernel-bootable image whose userland has e2fsprogs, used to work on a machine's disk offline.
+    /// Kernel-boot machines can use their own kernel; EFI machines borrow the cached Ubuntu image.
+    static func helperImages(for m: Machine) throws -> (kernel: URL, initrd: URL, rootfs: URL) {
+        if m.config.boot == .kernel, let d = Distro.find(m.config.distro), Images.isPrepared(d) {
+            let rootfs = Images.cacheDir(d).appendingPathComponent("rootfs.img")
+            if fileExists(m.kernel), fileExists(m.initrd), fileExists(rootfs) {
+                return (m.kernel, m.initrd, rootfs)
+            }
+        }
+        guard let ubuntu = Distro.find("ubuntu"), Images.isPrepared(ubuntu) else {
+            throw SharkError("this needs the Ubuntu helper image — download it once with: shark pull ubuntu")
+        }
+        let dir = Images.cacheDir(ubuntu)
+        return (dir.appendingPathComponent("kernel"), dir.appendingPathComponent("initrd"),
+                dir.appendingPathComponent("rootfs.img"))
+    }
+
+    /// Partition holding the root filesystem, or nil when the image has no partition table.
+    static func rootPartition(_ m: Machine) -> Int? { m.config.boot == .efi ? 1 : nil }
+
+    /// Check (and by default safely repair) a stopped machine's root filesystem with e2fsck in a helper VM.
+    /// `dryRun` maps to `e2fsck -n`, which cannot replay the journal — on a machine that was not shut down
+    /// cleanly that always reports leftovers, so it is not the default.
+    @discardableResult
+    static func fsck(_ m: Machine, repair: Bool, dryRun: Bool = false, quiet: Bool = false) throws -> Int {
+        guard !m.isRunning else { throw SharkError("\(m.name) is running — stop it first: shark stop \(m.name)") }
+        let lock = try MachineLock.acquire(m)
+        defer { _ = lock }
+        let helper = try helperImages(for: m)
+        let logFile = m.dir.appendingPathComponent("fsck.log")
+        let mode: PrepVM.FsckMode = dryRun ? .dryRun : (repair ? .repair : .preen)
+        if !quiet {
+            Log.info((repair ? "Repairing" : "Checking") + " the root filesystem of \(m.name) (e2fsck in a helper VM)…")
+        }
+        let rc = try PrepVM.checkFilesystem(kernel: helper.kernel, initrd: helper.initrd, helperRootfs: helper.rootfs,
+                                            targetDisk: m.diskImage, partition: rootPartition(m), mode: mode, logFile: logFile)
+        if !quiet { printHelperOutput(logFile) }
+        switch rc {
+        case 0:
+            if !quiet { Log.ok("\(m.name): filesystem is clean") }
+        case 1, 2:
+            Log.ok("\(m.name): filesystem errors were corrected")
+        case 4:
+            throw SharkError("\(m.name): the filesystem still has errors" +
+                             (repair ? " that e2fsck could not fix automatically" : " — run: shark fsck --repair \(m.name)"))
+        default:
+            throw SharkError("e2fsck failed (exit \(rc)); see \(logFile.path)")
+        }
+        return rc
+    }
+
+    /// Print just the helper script's own output from a helper-VM log (skipping the kernel/initramfs noise).
+    static func printHelperOutput(_ logFile: URL) {
+        let log = (try? String(contentsOf: logFile, encoding: .utf8)) ?? ""
+        let lines = log.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let from = lines.lastIndex(where: { $0.contains("init-bottom") }).map { $0 + 1 } ?? max(0, lines.count - 40)
+        for line in lines[from...] where !line.contains("SHARKBOX_") && !line.hasPrefix("mount:") && !line.isEmpty {
+            print(line)
+        }
+    }
+
+    /// After an unclean shutdown, replay the journal and fix what e2fsck can fix safely — exactly what a
+    /// physical machine does on boot. Without this, ext4 damage compounds across force stops.
+    static func checkAfterUncleanShutdown(_ m: Machine) {
+        guard fileExists(m.provisionedFlag), !fileExists(m.cleanFlag) else { return }
+        Log.warn("\(m.name) was not shut down cleanly last time; checking its filesystem first")
+        do {
+            _ = try fsck(m, repair: false, quiet: true)
+        } catch {
+            // Preen mode refuses anything that needs a decision. Make that decision rather than
+            // booting a guest whose root filesystem will remount read-only a second later.
+            Log.warn("the quick check could not fix everything; running a full repair")
+            do {
+                _ = try fsck(m, repair: true, quiet: true)
+            } catch {
+                Log.warn("repair failed: \(error)")
+                Log.warn("inspect it yourself with: shark fsck --dry-run \(m.name)")
+            }
+        }
+    }
+
+    // MARK: - reconfigure
+
+    static func set(_ m: Machine, cpus: Int?, memory: UInt64?, disk: UInt64?) throws {
+        guard !m.isRunning else { throw SharkError("\(m.name) is running — stop it first: shark stop \(m.name)") }
+        var c = m.config
+        var changes: [String] = []
+        if let cpus {
+            guard cpus >= 1, cpus <= ProcessInfo.processInfo.activeProcessorCount else {
+                throw SharkError("--cpus must be between 1 and \(ProcessInfo.processInfo.activeProcessorCount)")
+            }
+            changes.append("CPUs \(c.cpus) → \(cpus)")
+            c.cpus = cpus
+        }
+        if let memory {
+            let mb = memory >> 20
+            guard mb >= 512 else { throw SharkError("--memory must be at least 512m") }
+            changes.append("memory \(formatBytes(c.memoryMB << 20)) → \(formatBytes(mb << 20))")
+            c.memoryMB = mb
+        }
+        if let disk {
+            guard disk > c.diskBytes else {
+                throw SharkError("a disk can only grow (currently \(formatBytes(c.diskBytes)))")
+            }
+            let lock = try MachineLock.acquire(m)
+            defer { _ = lock }
+            let helper = try helperImages(for: m)
+            Log.info("Growing the disk of \(m.name) to \(formatBytes(disk)) (offline, in a helper VM)…")
+            try grow(m.diskImage, to: disk)
+            do {
+                try PrepVM.growRootFilesystem(kernel: helper.kernel, initrd: helper.initrd, helperRootfs: helper.rootfs,
+                                              targetDisk: m.diskImage, partition: rootPartition(m),
+                                              logFile: m.dir.appendingPathComponent("prep.log"))
+            } catch {
+                // The image file is already bigger; record that so `shark list` does not lie, but say what failed.
+                c.diskBytes = disk
+                m.config = c
+                try? m.save()
+                throw SharkError("the disk image was enlarged but the filesystem could not be resized: \(error)")
+            }
+            changes.append("disk \(formatBytes(c.diskBytes)) → \(formatBytes(disk))")
+            c.diskBytes = disk
+        }
+        guard !changes.isEmpty else {
+            throw SharkError("nothing to change — pass --cpus, --memory or --disk")
+        }
+        m.config = c
+        try m.save()
+        Log.ok("\(m.name): " + changes.joined(separator: ", "))
     }
 
     // MARK: - images

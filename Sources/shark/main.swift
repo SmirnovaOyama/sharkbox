@@ -20,6 +20,10 @@ MACHINES
   shark info <name>              show configuration, paths, IP
   shark ip <name>                print the machine's IP
   shark logs [-f] <name>         show the serial console log
+  shark fsck [--repair] <name>   check a stopped machine's root filesystem (replays the journal;
+                                 --repair fixes everything, --dry-run only reports)
+  shark set <name> [--cpus N] [--memory 4g] [--disk 128g]
+                                 change a stopped machine's resources (a disk can only grow)
   shark default [name]           show / set the default machine
 
 USING MACHINES
@@ -31,6 +35,7 @@ USING MACHINES
 IMAGES
   shark images                   list available distros
   shark pull <distro>            download an image ahead of time
+  shark image rm <distro>        delete a cached image (machines already created keep working)
 
 Inside a machine your Mac home directory is mounted at /mnt/mac (and /Users/<you>).
 `shark` run from a folder under your home drops you into the same folder in Linux.
@@ -184,6 +189,34 @@ func main() throws {
             Log.ok("default machine is now \(n)")
         } else {
             print(try Commands.resolveDefault().name)
+        }
+
+    case "fsck", "repair":
+        let p = try parseArgs(args, boolFlags: ["repair", "yes", "dry-run"], shortMap: ["y": "repair", "n": "dry-run"])
+        let m = try p.positional.first.map { try Machine.load($0) } ?? Commands.resolveDefault()
+        try Commands.fsck(m, repair: p.has("repair") || p.has("yes") || cmd == "repair", dryRun: p.has("dry-run"))
+
+    case "set", "config":
+        let p = try parseArgs(args, valueFlags: ["cpus", "memory", "disk"], shortMap: ["c": "cpus", "d": "disk"])
+        let m = try p.positional.first.map { try Machine.load($0) } ?? Commands.resolveDefault()
+        try Commands.set(m,
+            cpus: try p.value("cpus").map { guard let n = Int($0), n > 0 else { throw SharkError("bad --cpus") }; return n },
+            memory: try p.value("memory").map { try parseSize($0, defaultUnit: "m") },
+            disk: try p.value("disk").map { try parseSize($0, defaultUnit: "g") })
+
+    case "image", "img":
+        let p = try parseArgs(args)
+        switch p.positional.first {
+        case "rm", "remove", "delete":
+            guard p.positional.count > 1 else { throw SharkError("usage: shark image rm <distro>") }
+            for name in p.positional.dropFirst() {
+                guard let d = Distro.find(name) else { throw SharkError("unknown distro \"\(name)\"") }
+                try Images.remove(d)
+            }
+        case "ls", "list", nil:
+            Commands.images()
+        default:
+            throw SharkError("usage: shark image ls | shark image rm <distro>")
         }
 
     case "images", "distros":
