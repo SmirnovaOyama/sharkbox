@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import AppKit
+import Combine
 
 /// A snapshot of one machine, read from ~/.sharkbox/machines/<name>/.
 struct MachineInfo: Identifiable, Equatable {
@@ -82,14 +83,23 @@ final class MachineStore: ObservableObject {
     @Published var machines: [MachineInfo] = []
     @Published var images: [ImageInfo] = []
     let settings = AppSettings()
+    /// Requests raised from the menu bar / app menu, which may fire while the main window is closed.
+    /// They live here rather than in a NotificationCenter message so the state survives until the
+    /// window actually mounts and can act on it.
+    @Published var pendingDelete: String?
+    @Published var pendingNewMachineDistro: String?
     @Published var tasks: [CLITask] = []
     @Published var busy: Set<String> = []
     @Published var lastError: String?
     let cliPath: String
     private var timer: Timer?
+    /// `settings` is a nested ObservableObject: without this, changing a preference publishes on
+    /// `settings` only and no view observing the store is ever invalidated.
+    private var settingsSink: AnyCancellable?
 
     init() {
         cliPath = MachineStore.findCLI()
+        settingsSink = settings.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         try? Paths.ensure()
         refresh()
         refreshImages()
@@ -221,6 +231,11 @@ final class MachineStore: ObservableObject {
     }
     func restart(_ name: String) { run(["restart", name], title: "Restart \(name)", machine: name) }
     func delete(_ name: String)  { run(["delete", "-f", name], title: "Delete \(name)", machine: name) }
+
+    /// Honours the "Ask before deleting" preference, which nothing used to consult.
+    func requestDelete(_ name: String) {
+        if settings.confirmDestructive { pendingDelete = name } else { delete(name) }
+    }
     func setDefault(_ name: String) { run(["default", name], title: "Set default \(name)", machine: nil) }
     func installDocker(_ name: String) { run(["docker", name], title: "Set up Docker in \(name)", machine: name) }
 
@@ -310,9 +325,98 @@ final class MachineStore: ObservableObject {
         try? fh.seek(toOffset: start)
         let data = fh.readDataToEndOfFile()
         var s = String(decoding: data, as: UTF8.self)
-        if start > 0, let nl = s.firstIndex(of: "\n") { s = String(s[s.index(after: nl)...]) }
-        // strip ANSI colour codes systemd prints on the console
-        return s.replacingOccurrences(of: "\u{1B}\\[[0-9;]*m", with: "", options: .regularExpression)
+        if start > 0 {
+            if let nl = s.firstIndex(of: "\n") { s = String(s[s.index(after: nl)...]) }
+            // A cut through an escape sequence strands its tail, e.g. a bare "0;1;39m".
+            s = s.replacingOccurrences(of: "^[0-9;]*m", with: "", options: .regularExpression)
+        }
+        return normalizeConsole(s)
+    }
+
+    /// The console tail with systemd's own ANSI colours turned into real styling. Stripping them
+    /// left a flat grey wall of text with every unit printed twice and nothing to tell the two
+    /// apart; the colours are most of what makes a boot log readable.
+    static func consoleTail(_ url: URL, maxBytes: Int) -> AttributedString {
+        ansiAttributed(tailOfFile(url, maxBytes: maxBytes))
+    }
+
+    /// Black and white map to the theme's own colours so the log stays readable in both.
+    private static let ansiPalette: [Color] = [
+        .secondary, .red, .green, .yellow, .blue, .purple, .teal, .primary,
+    ]
+
+    static func ansiAttributed(_ s: String) -> AttributedString {
+        let mono = Font.system(size: 12, design: .monospaced)
+        var out = AttributedString()
+        var chunk = ""
+        var color: Color?
+        var bold = false
+
+        func flush() {
+            guard !chunk.isEmpty else { return }
+            var piece = AttributedString(chunk)
+            piece.font = bold ? mono.weight(.semibold) : mono
+            if let color { piece.foregroundColor = color }
+            out += piece
+            chunk = ""
+        }
+        func select(_ params: String) {
+            let codes = params.split(separator: ";").compactMap { Int($0) }
+            guard !codes.isEmpty else { color = nil; bold = false; return }   // bare ESC[m resets
+            for c in codes {
+                switch c {
+                case 0:        color = nil; bold = false
+                case 1:        bold = true
+                case 22:       bold = false
+                case 30...37:  color = ansiPalette[c - 30]
+                case 90...97:  color = ansiPalette[c - 90]
+                case 39:       color = nil
+                default:       break
+                }
+            }
+        }
+
+        var i = s.startIndex
+        while i < s.endIndex {
+            let c = s[i]
+            let next = s.index(after: i)
+            guard c == "\u{1B}", next < s.endIndex, s[next] == "[" else {
+                chunk.append(c)
+                i = next
+                continue
+            }
+            var j = s.index(after: next)
+            var params = ""
+            while j < s.endIndex, !("@"..."~").contains(s[j]) {
+                params.append(s[j])
+                j = s.index(after: j)
+            }
+            flush()
+            if j < s.endIndex {
+                if s[j] == "m" { select(params) }      // every other CSI verb is just dropped
+                i = s.index(after: j)
+            } else {
+                i = s.endIndex
+            }
+        }
+        flush()
+        return out
+    }
+
+    /// The serial console is a terminal stream, not a text file: lines arrive CRLF-terminated and
+    /// systemd rewrites a line in place with a bare CR ("Starting foo…\r[  OK  ] Started foo.").
+    /// Rendered verbatim every CR became another line break, so the log came out double-spaced
+    /// with each status line shown twice. Keep what a terminal would still be displaying.
+    static func normalizeConsole(_ s: String) -> String {
+        guard s.contains("\r") else { return s }
+        return s.replacingOccurrences(of: "\r\n", with: "\n")
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> Substring in
+                guard line.contains("\r") else { return line }
+                let segs = line.split(separator: "\r", omittingEmptySubsequences: false)
+                return segs.last(where: { !$0.isEmpty }) ?? ""
+            }
+            .joined(separator: "\n")
     }
 }
 

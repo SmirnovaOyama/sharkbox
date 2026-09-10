@@ -50,8 +50,11 @@ $(APP_STAMP): $(BIN) $(GUI_SOURCES) $(SHARED) Resources/Info.plist build/Sharkbo
 	cp Resources/Info.plist $(APP)/Contents/Info.plist
 	cp build/Sharkbox.icns $(APP)/Contents/Resources/Sharkbox.icns
 	codesign --force --sign - --entitlements $(ENTITLEMENTS) $(APP)/Contents/MacOS/shark
-	xattr -cr $(APP)          # codesign refuses a bundle carrying extended attributes
-	codesign --force --sign - $(APP)
+	# codesign refuses a bundle carrying extended attributes, and clearing them is racy inside a
+	# synced folder: signing the nested binary above makes iCloud/Dropbox re-stamp
+	# com.apple.FinderInfo on the bundle, sometimes between these two commands. Retry once.
+	xattr -cr $(APP); codesign --force --sign - $(APP) \
+	    || { sleep 2; xattr -cr $(APP); codesign --force --sign - $(APP); }
 	touch $(APP_STAMP)
 
 run: app

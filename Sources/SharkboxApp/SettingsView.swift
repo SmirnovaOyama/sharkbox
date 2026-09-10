@@ -123,7 +123,7 @@ struct StorageSettings: View {
                             .foregroundStyle(.secondary)
                     } label: {
                         HStack(spacing: 6) {
-                            DistroMark(distro: m.distro, size: 14, color: .secondary)
+                            DistroMark(distro: m.distro, size: 14)
                             Text(m.name)
                         }
                     }

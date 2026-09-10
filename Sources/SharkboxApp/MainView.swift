@@ -7,7 +7,6 @@ import AppKit
 final class MainUIState: ObservableObject {
     @Published var selection: String?
     @Published var search = ""
-    @Published var pendingDelete: String?
 }
 
 struct MainView: View {
@@ -30,7 +29,7 @@ struct MainView: View {
             sidebar
         } detail: {
             if let m = selected {
-                MachineDetailView(machine: m, requestDelete: { ui.pendingDelete = m.name })
+                MachineDetailView(machine: m, requestDelete: { store.requestDelete(m.name) })
             } else {
                 emptyDetail
             }
@@ -42,21 +41,18 @@ struct MainView: View {
             if let s = ui.selection, !new.contains(where: { $0.name == s }) { ui.selection = nil }
             if ui.selection == nil { pickDefault() }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .requestDeleteMachine)) { note in
-            if let name = note.object as? String { ui.pendingDelete = name }
-        }
         .onReceive(NotificationCenter.default.publisher(for: .selectMachine)) { note in
             if let name = note.object as? String { ui.selection = name }
         }
-        .alert("Delete \"\(ui.pendingDelete ?? "")\"?", isPresented: Binding(
-            get: { ui.pendingDelete != nil }, set: { if !$0 { ui.pendingDelete = nil } })) {
+        .alert("Delete \"\(store.pendingDelete ?? "")\"?", isPresented: Binding(
+            get: { store.pendingDelete != nil }, set: { if !$0 { store.pendingDelete = nil } })) {
             Button("Delete", role: .destructive) {
-                if let n = ui.pendingDelete { store.delete(n) }
-                ui.pendingDelete = nil
+                if let n = store.pendingDelete { store.delete(n) }
+                store.pendingDelete = nil
             }
-            Button("Cancel", role: .cancel) { ui.pendingDelete = nil }
+            Button("Cancel", role: .cancel) { store.pendingDelete = nil }
         } message: {
-            let m = store.machines.first { $0.name == ui.pendingDelete }
+            let m = store.machines.first { $0.name == store.pendingDelete }
             Text("This removes the machine and its \(Fmt.bytes(m?.diskUsed ?? 0)) disk image. It cannot be undone.")
         }
         .alert("Something went wrong", isPresented: Binding(
@@ -98,17 +94,16 @@ struct MainView: View {
     }
 
     private func row(_ m: MachineInfo) -> some View {
-        MachineRow(machine: m, requestDelete: { ui.pendingDelete = m.name }).tag(m.name)
+        MachineRow(machine: m, requestDelete: { store.requestDelete(m.name) }).tag(m.name)
     }
 
     private var sidebarFooter: some View {
         HStack(spacing: 6) {
-            Glyph(kind: .disk, size: 12, color: .secondary)
             Text("\(Fmt.bytes(store.stateSize)) used · \(Fmt.bytes(store.freeSpace)) free")
-                .font(.caption2).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(.secondary)
             Spacer()
         }
-        .padding(.horizontal, 12).padding(.vertical, 6)
+        .padding(.horizontal, 14).padding(.vertical, 7)
         .background(.bar)
     }
 
@@ -158,16 +153,19 @@ struct MachineRow: View {
 
     var body: some View {
         HStack(spacing: 9) {
-            DistroMark(distro: machine.distro, size: 17, color: machine.isRunning ? .accentColor : .secondary)
+            DistroMark(distro: machine.distro, size: 17)
             VStack(alignment: .leading, spacing: 1) {
-                Text(machine.name).fontWeight(.medium).lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(machine.name).fontWeight(.medium).lineLimit(1)
+                    if machine.isDefault {
+                        Glyph(kind: .star, size: 8, color: .secondary)
+                            .help("Default machine")
+                    }
+                }
                 Text(machine.ip ?? machine.state)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
-            if machine.isDefault {
-                Glyph(kind: .star, size: 10, color: .yellow)
-            }
             StatusDot(machine: machine)
         }
         .padding(.vertical, 2)
@@ -230,14 +228,12 @@ struct StatusDot: View {
 
     var body: some View {
         if machine.isTransitioning || store.busy.contains(machine.name) {
-            ProgressView().controlSize(.mini).scaleEffect(0.6).frame(width: 12, height: 12)
-        } else {
-            Circle()
-                .fill(machine.stateColor)
-                .frame(width: 8, height: 8)
-                .overlay(Circle().stroke(machine.stateColor.opacity(0.35), lineWidth: 3.5))
-                .frame(width: 12, height: 12)
+            ProgressView().controlSize(.mini).scaleEffect(0.55).frame(width: 10, height: 10)
+        } else if machine.isRunning || machine.state == "error" {
+            Circle().fill(machine.stateColor).frame(width: 7, height: 7)
         }
+        // Nothing for a stopped machine: the sidebar is already split into Running / Stopped and
+        // every row spells out its state, so a grey haloed dot per row was pure noise.
     }
 }
 
@@ -246,7 +242,8 @@ struct StatusDot: View {
 final class DetailUIState: ObservableObject {
     enum Tab: String, CaseIterable { case overview = "Overview", console = "Console", resources = "Resources" }
     @Published var tab: Tab = .overview
-    @Published var consoleText = ""
+    @Published var consoleText = ""            // plain, for Copy and change detection
+    @Published var consoleStyled = AttributedString()
     @Published var follow = true
     @Published var machineName = ""
     @Published var cpus = 1
@@ -274,16 +271,21 @@ struct MachineDetailView: View {
             .labelsHidden()
             .padding(.horizontal, 20).padding(.vertical, 10)
             Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    switch ui.tab {
-                    case .overview: overview
-                    case .console: consoleTab
-                    case .resources: resourcesTab
+            // Console scrolls itself and wants the whole pane. Nesting it in the tab ScrollView
+            // put two scrollers inside each other and let its toolbar scroll out of reach.
+            switch ui.tab {
+            case .console:
+                consoleTab
+                    .padding(20)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            case .overview, .resources:
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        if ui.tab == .overview { overview } else { resourcesTab }
                     }
+                    .padding(20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(20)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .onAppear { reload(force: true) }
@@ -295,11 +297,13 @@ struct MachineDetailView: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 14) {
-            DistroMark(distro: machine.distro, size: 34, color: machine.isRunning ? .accentColor : .secondary)
+            DistroMark(distro: machine.distro, size: 30)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 8) {
                     Text(machine.name).font(.system(size: 22, weight: .semibold))
-                    if machine.isDefault { Glyph(kind: .star, size: 12, color: .yellow) }
+                    if machine.isDefault {
+                        Glyph(kind: .star, size: 10, color: .secondary).help("Default machine")
+                    }
                 }
                 HStack(spacing: 6) {
                     StatusDot(machine: machine)
@@ -382,39 +386,64 @@ struct MachineDetailView: View {
 
     private func statCard(_ glyph: Glyph.Kind, _ value: String, _ label: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Glyph(kind: glyph, size: 16, color: .secondary)
-            Text(value).font(.system(size: 15, weight: .medium)).lineLimit(1).minimumScaleFactor(0.7)
-            Text(label).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Text(value)
+                .font(.title3.weight(.semibold)).monospacedDigit()
+                .lineLimit(1).minimumScaleFactor(0.6)
+            HStack(spacing: 4) {
+                Glyph(kind: glyph, size: 11, color: .secondary)
+                Text(label).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
         }
-        .padding(12)
+        .padding(.horizontal, 12).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.secondary.opacity(0.09), in: RoundedRectangle(cornerRadius: 9))
+        .background(.quaternary.opacity(0.35), in: Self.tile)
+        .overlay(Self.tile.strokeBorder(.quaternary, lineWidth: 0.5))
     }
+
+    /// One shape for every panel in the detail view, so the corner radius stops drifting (it was
+    /// 7, 8 and 9 in three adjacent places).
+    static let tile = RoundedRectangle(cornerRadius: 8, style: .continuous)
 
     private var infoGrid: some View {
-        Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 7) {
-            gridRow("Distribution", machine.distroTitle)
-            gridRow("SSH", "ssh \(machine.name).shark")
-            gridRow("Rosetta", machine.rosetta ? "enabled — x86_64 binaries run" : "off")
-            gridRow("Mac home in Linux", "/mnt/mac  (also /Users/\(machine.user))")
-            gridRow("Created", Fmt.date.string(from: machine.created))
-            gridRow("Location", machine.dir.path)
+        VStack(spacing: 0) {
+            infoRow("Distribution", machine.distroTitle)
+            Divider()
+            infoRow("SSH", "ssh \(machine.name).shark", mono: true)
+            Divider()
+            infoRow("Rosetta", machine.rosetta ? "enabled — x86_64 binaries run" : "off")
+            Divider()
+            infoRow("Mac home in Linux", "/mnt/mac", mono: true)
+            Divider()
+            infoRow("Created", Fmt.date.string(from: machine.created))
+            Divider()
+            infoRow("Location", machine.dir.path, mono: true)
         }
-        .font(.callout)
-        .textSelection(.enabled)
+        .padding(.horizontal, 12)
+        .background(.quaternary.opacity(0.22), in: Self.tile)
+        .overlay(Self.tile.strokeBorder(.quaternary, lineWidth: 0.5))
     }
 
-    private func gridRow(_ k: String, _ v: String) -> some View {
-        GridRow {
-            Text(k).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+    private func infoRow(_ k: String, _ v: String, mono: Bool = false) -> some View {
+        // Deliberately not LabeledContent: outside a Form it lays the label out in a centred
+        // column, which left the text huddled in the middle of a full-width card with a dead
+        // gutter down each side. Pin the label to the leading edge and the value to the trailing.
+        HStack(alignment: .firstTextBaseline, spacing: 16) {
+            Text(k).font(.callout).foregroundStyle(.secondary)
+            Spacer(minLength: 24)
             Text(v)
+                .font(mono ? .system(.callout, design: .monospaced) : .callout)
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+                .lineLimit(1).truncationMode(.middle)
+                .help(v)
         }
+        .padding(.vertical, 8)
     }
 
     // MARK: console
 
     private var consoleTab: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Toggle("Follow", isOn: $ui.follow).toggleStyle(.switch).controlSize(.mini)
                 Spacer()
@@ -429,17 +458,24 @@ struct MachineDetailView: View {
             }
             ScrollViewReader { proxy in
                 ScrollView {
-                    Text(ui.consoleText.isEmpty ? "(no console output yet)" : ui.consoleText)
-                        .font(.system(size: 11, design: .monospaced))
+                    Group {
+                        if ui.consoleText.isEmpty {
+                            Text("(no console output yet)").foregroundStyle(.secondary)
+                        } else {
+                            Text(ui.consoleStyled)
+                        }
+                    }
+                        .font(.system(size: 12, design: .monospaced))
                         .textSelection(.enabled)
+                        .lineSpacing(2.5)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
+                        .padding(14)
                     Color.clear.frame(height: 1).id("bottom")
                 }
-                .frame(minHeight: 340)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(nsColor: .textBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 7))
-                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.secondary.opacity(0.3)))
+                .clipShape(Self.tile)
+                .overlay(Self.tile.strokeBorder(.quaternary, lineWidth: 0.5))
                 .onChange(of: ui.consoleText) { _, _ in
                     if ui.follow { proxy.scrollTo("bottom", anchor: .bottom) }
                 }
@@ -463,13 +499,17 @@ struct MachineDetailView: View {
                 Stepper("CPUs: \(ui.cpus)", value: $ui.cpus, in: 1...ProcessInfo.processInfo.activeProcessorCount)
                 Stepper("Memory: \(ui.memoryGB) GB", value: $ui.memoryGB,
                         in: 1...max(2, Int(ProcessInfo.processInfo.physicalMemory >> 30)))
+                // The CLI puts no ceiling on --disk, so `shark set --disk 3t` used to make this
+                // range's lowerBound exceed its upperBound and trap the whole app on this tab.
                 Stepper("Disk: \(ui.diskGB) GB", value: $ui.diskGB,
-                        in: Int(machine.diskBytes >> 30)...2048, step: 8)
+                        in: diskFloor...max(diskFloor, 2048), step: 8)
                 Text("A disk can only grow. Growing it resizes the guest filesystem offline, which takes a few seconds.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             .formStyle(.grouped)
-            .frame(maxWidth: 420)
+            // Fill the pane like the Overview tab does. Capping this at 420 left a narrow column
+            // hugging the left edge of a wide window with a dead expanse beside it.
+            .fixedSize(horizontal: false, vertical: true)
             .disabled(machine.isRunning || busy)
 
             HStack {
@@ -478,8 +518,8 @@ struct MachineDetailView: View {
                 Button("Apply Changes") {
                     store.setResources(machine.name,
                                        cpus: ui.cpus != machine.cpus ? ui.cpus : nil,
-                                       memoryGB: UInt64(ui.memoryGB) << 30 != machine.memoryMB << 20 ? ui.memoryGB : nil,
-                                       diskGB: UInt64(ui.diskGB) << 30 != machine.diskBytes ? ui.diskGB : nil)
+                                       memoryGB: ui.memoryGB != machineMemoryGB ? ui.memoryGB : nil,
+                                       diskGB: ui.diskGB != diskFloor ? ui.diskGB : nil)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(machine.isRunning || busy || !resourcesChanged)
@@ -487,18 +527,26 @@ struct MachineDetailView: View {
         }
     }
 
+    /// Compared at the same whole-GB granularity the steppers edit at. Comparing the reconstructed
+    /// byte counts instead left Apply permanently enabled for any machine whose memory or disk was
+    /// not an exact multiple of 1 GiB — and applying it silently rounded the machine down.
     private var resourcesChanged: Bool {
-        ui.cpus != machine.cpus
-            || UInt64(ui.memoryGB) << 30 != machine.memoryMB << 20
-            || UInt64(ui.diskGB) << 30 != machine.diskBytes
+        ui.cpus != machine.cpus || ui.memoryGB != machineMemoryGB || ui.diskGB != diskFloor
     }
+
+    private var machineMemoryGB: Int { max(1, Int(machine.memoryMB / 1024)) }
+    private var diskFloor: Int { max(1, Int(machine.diskBytes >> 30)) }
 
     // MARK: loading
 
     private func reload(force: Bool) {
         let lines = Int(store.settings.consoleLines)
-        let text = MachineStore.tailOfFile(machine.consoleLog, maxBytes: max(8_000, lines * 90))
-        if text != ui.consoleText { ui.consoleText = text }
+        let styled = MachineStore.consoleTail(machine.consoleLog, maxBytes: max(8_000, lines * 90))
+        let text = String(styled.characters)
+        if text != ui.consoleText {
+            ui.consoleText = text
+            ui.consoleStyled = styled
+        }
         if force || ui.machineName != machine.name {
             ui.machineName = machine.name
             loadResourceFields()
@@ -507,8 +555,8 @@ struct MachineDetailView: View {
 
     private func loadResourceFields() {
         ui.cpus = machine.cpus
-        ui.memoryGB = max(1, Int(machine.memoryMB / 1024))
-        ui.diskGB = max(1, Int(machine.diskBytes >> 30))
+        ui.memoryGB = machineMemoryGB
+        ui.diskGB = diskFloor
     }
 }
 

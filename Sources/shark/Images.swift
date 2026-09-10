@@ -8,13 +8,25 @@ enum Images {
         let dir = cacheDir(d)
         let ready = dir.appendingPathComponent(".ready")
         if fileExists(ready) { return dir }
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let fm = FileManager.default
+        // A cache directory without `.ready` is debris from an interrupted attempt, and the
+        // per-distro closures unpack as if into an empty directory — their `moveItem` onto an
+        // existing rootfs.img fails. Left in place it wedges this distro for good, and every
+        // retry strands another multi-GB copy. Start clean; the downloads live elsewhere and
+        // are kept, so a retry does not re-fetch them.
+        try? fm.removeItem(at: dir)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         for f in d.files {
             try download(f.url, to: Paths.images.appendingPathComponent(f.name))
         }
-        try d.prepare(dir)
-        guard fileExists(dir.appendingPathComponent("rootfs.img")) else {
-            throw SharkError("image preparation for \(d.id) produced no rootfs.img")
+        do {
+            try d.prepare(dir)
+            guard fileExists(dir.appendingPathComponent("rootfs.img")) else {
+                throw SharkError("image preparation for \(d.id) produced no rootfs.img")
+            }
+        } catch {
+            try? fm.removeItem(at: dir)   // leave nothing a retry would trip over
+            throw error
         }
         writeString(ISO8601DateFormatter().string(from: Date()), to: ready)
         Log.ok("Image \(d.id) ready")

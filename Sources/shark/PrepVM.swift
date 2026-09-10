@@ -19,7 +19,7 @@ final class PrepVM: NSObject, VZVirtualMachineDelegate {
         let dev = partition.map { "/dev/vdb\($0)" } ?? "/dev/vdb"
         var script = ""
         if let partition { script += "growpart /dev/vdb \(partition); " }
-        script += "e2fsck -f -p \(dev); if resize2fs -f \(dev); then sync; echo SHARKBOX_PREP_OK; else echo SHARKBOX_PREP_FAIL; fi"
+        script += "e2fsck -f -p \(dev); if resize2fs -f \(dev); then sync; echo ${P}_PREP_OK; else echo ${P}_PREP_FAIL; fi"
         try run(kernel: kernel, initrd: initrd, helperRootfs: helperRootfs, targetDisk: targetDisk,
                 script: script, logFile: logFile, timeout: timeout)
     }
@@ -44,7 +44,7 @@ final class PrepVM: NSObject, VZVirtualMachineDelegate {
                                 partition: Int?, mode fsckMode: FsckMode, logFile: URL, timeout: TimeInterval = 600) throws -> Int {
         let dev = partition.map { "/dev/vdb\($0)" } ?? "/dev/vdb"
         let mode = fsckMode.flags
-        let script = "e2fsck \(mode) \(dev); rc=$?; sync; echo SHARKBOX_FSCK_RC=$rc; echo SHARKBOX_PREP_OK"
+        let script = "e2fsck \(mode) \(dev); rc=$?; sync; echo ${P}_FSCK_RC=$rc; echo ${P}_PREP_OK"
         try run(kernel: kernel, initrd: initrd, helperRootfs: helperRootfs, targetDisk: targetDisk,
                 script: script, logFile: logFile, timeout: timeout)
         let log = (try? String(contentsOf: logFile, encoding: .utf8)) ?? ""
@@ -56,10 +56,14 @@ final class PrepVM: NSObject, VZVirtualMachineDelegate {
     }
 
     /// Boot the helper with `targetDisk` as /dev/vdb and run `script` as PID 1 (via bash). The script must
-    /// print SHARKBOX_PREP_OK or SHARKBOX_PREP_FAIL; the host watches the console and stops the VM itself.
+    /// print ${P}_PREP_OK or ${P}_PREP_FAIL; the host watches the console and stops the VM itself.
     static func run(kernel: URL, initrd: URL, helperRootfs: URL, targetDisk: URL,
                     script body: String, logFile: URL, timeout: TimeInterval) throws {
-        let script = "mount -t proc proc /proc; mount -t sysfs sys /sys 2>/dev/null; mount -t tmpfs tmp /tmp; mount -t tmpfs run /run; "
+        // `P` spells the marker prefix at runtime, and every caller must build its markers from it.
+        // They must NEVER appear literally here: Linux echoes the whole command line to the console
+        // we are watching ("Kernel command line: ..."), so a literal SHARKBOX_PREP_OK would match in
+        // the first second of boot and we would report success before e2fsck/resize2fs had run.
+        let script = "P=SHARKBOX; mount -t proc proc /proc; mount -t sysfs sys /sys 2>/dev/null; mount -t tmpfs tmp /tmp; mount -t tmpfs run /run; "
             + body + "; sleep 600"
         let cmdline = "console=hvc0 root=/dev/vda ro rootwait init=/bin/bash -- -c \"\(script)\""
 

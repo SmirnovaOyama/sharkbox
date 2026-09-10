@@ -180,13 +180,31 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
     /// Runs on `queue`.
     func requestShutdown(force: Bool) {
         if vm.state == .stopped { cleanupAndExit(0) }
-        if force || stopRequested || !vm.canRequestStop {
+        if force || !vm.canRequestStop {
             forceStop()
+            return
+        }
+        // A graceful stop is already under way: let its ladder (agent → power button → 45s → plug)
+        // finish. Escalating on a repeat SIGTERM would pull the plug on a guest that is part-way
+        // through unmounting — precisely the ext4 corruption this path exists to avoid. A caller
+        // that really means "now" escalates with SIGUSR1, which takes the force branch above.
+        if stopRequested {
+            log("stop already in progress; ignoring repeat request")
             return
         }
         stopRequested = true
         ipTimer?.cancel()          // never overwrite the recorded IP with stale data while shutting down
         machine.writeState("stopping")
+        // Arm the backstop and the console watchdog here, before we talk to anything in the guest.
+        // Nesting them inside the agent call meant a guest that accepted the vsock connection and
+        // then went silent stranded the whole ladder: no power button, no 45-second deadline, a
+        // runner hung until something SIGKILLed it — which is itself a pulled plug.
+        watchForStuckPowerOff()
+        queue.asyncAfter(deadline: .now() + 45) { [weak self] in
+            guard let self, self.vm.state != .stopped else { return }
+            self.log("guest did not stop within 45s; forcing")
+            self.forceStop()
+        }
         // Ask the guest agent over vsock first. A VZ stop request is delivered as a virtual power-button
         // press, and a busy Linux guest can ignore it entirely — which ends in a 45-second wait and a
         // pulled plug, and that is what corrupts ext4. Talking to the agent is off the VM queue.
@@ -206,17 +224,12 @@ final class VMRunner: NSObject, VZVirtualMachineDelegate {
                         return
                     }
                 }
-                self.watchForStuckPowerOff()
-                // A guest that ignored the power button gets one more chance through the agent, then the plug.
+                // A guest that ignored the power button gets one more chance through the agent;
+                // the plug is already scheduled by requestShutdown.
                 self.queue.asyncAfter(deadline: .now() + 20) { [weak self] in
                     guard let self, self.vm.state != .stopped, !acked else { return }
                     self.log("no response to the power button; retrying through the guest agent")
                     DispatchQueue.global().async { _ = self.proxy?.powerOff() }
-                }
-                self.queue.asyncAfter(deadline: .now() + 45) { [weak self] in
-                    guard let self, self.vm.state != .stopped else { return }
-                    self.log("guest did not stop within 45s; forcing")
-                    self.forceStop()
                 }
             }
         }

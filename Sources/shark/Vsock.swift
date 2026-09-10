@@ -121,6 +121,13 @@ final class VsockProxy {
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 
+    /// Bound a blocking read. `connectGuest` only bounds the *connect*, so without this a guest that
+    /// accepts the connection and then never answers blocks the caller forever.
+    private func setReadTimeout(_ fd: Int32, seconds: Int) {
+        var tv = timeval(tv_sec: seconds, tv_usec: 0)
+        _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+    }
+
     /// Push the host's wall clock to the guest agent (vsock port 2224). Returns true if the guest acknowledged.
     @discardableResult
     func pushClock() -> Bool {
@@ -128,6 +135,7 @@ final class VsockProxy {
         defer { conn.close() }
         let msg = String(format: "%.3f\n", Date().timeIntervalSince1970)
         _ = msg.withCString { write(conn.fileDescriptor, $0, msg.utf8.count) }
+        setReadTimeout(conn.fileDescriptor, seconds: 3)
         var buf = [UInt8](repeating: 0, count: 8)
         let n = read(conn.fileDescriptor, &buf, buf.count)
         return n > 0 && buf[0] == UInt8(ascii: "o")
@@ -140,6 +148,7 @@ final class VsockProxy {
         defer { conn.close() }
         let msg = "poweroff\n"
         _ = msg.withCString { write(conn.fileDescriptor, $0, msg.utf8.count) }
+        setReadTimeout(conn.fileDescriptor, seconds: 5)
         var buf = [UInt8](repeating: 0, count: 8)
         let n = read(conn.fileDescriptor, &buf, buf.count)
         return n > 0 && buf[0] == UInt8(ascii: "o")

@@ -10,7 +10,7 @@ struct ImagesView: View {
             List {
                 ForEach(store.images) { img in
                     HStack(spacing: 10) {
-                        DistroMark(distro: img.id, size: 22, color: img.downloaded ? .accentColor : .secondary)
+                        DistroMark(distro: img.id, size: 22).opacity(img.downloaded ? 1 : 0.45)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(img.title).fontWeight(.medium)
                             Text(img.downloaded
