@@ -10,7 +10,6 @@ struct Glyph: View {
         case gear, cpu, memory, disk, network, folder, key, clock, wrench, download, upload
         case check, xmark, warning, info, ellipsis, chevronRight, chevronDown, copy, bolt
         case window, shield, image, list, search, sliders, link, power, refresh
-        case ubuntu, debian, tux
     }
 
     let kind: Kind
@@ -19,16 +18,26 @@ struct Glyph: View {
     var color: Color = .primary
 
     var body: some View {
-        Canvas(rendersAsynchronously: false) { ctx, _ in
-            ctx.scaleBy(x: size / 24, y: size / 24)
-            let g = Glyph.geometry(kind)
-            for p in g.fills { ctx.fill(p, with: .color(color)) }
-            for p in g.strokes {
-                ctx.stroke(p, with: .color(color), style: StrokeStyle(lineWidth: g.weight ?? weight, lineCap: .round, lineJoin: .round))
+        if let name = Glyph.symbol(kind) {
+            // Interface icons come from SF Symbols so they carry the system's optical sizing and
+            // weight, and sit correctly on the text baseline next to native controls. Hand-drawn
+            // equivalents were subtly the wrong weight everywhere and read as foreign on macOS.
+            Image(systemName: name)
+                .font(.system(size: size, weight: .medium))
+                .foregroundStyle(color)
+                .accessibilityHidden(true)
+        } else {
+            Canvas(rendersAsynchronously: false) { ctx, _ in
+                ctx.scaleBy(x: size / 24, y: size / 24)
+                let g = Glyph.geometry(kind)
+                for p in g.fills { ctx.fill(p, with: .color(color)) }
+                for p in g.strokes {
+                    ctx.stroke(p, with: .color(color), style: StrokeStyle(lineWidth: g.weight ?? weight, lineCap: .round, lineJoin: .round))
+                }
             }
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
         }
-        .frame(width: size, height: size)
-        .accessibilityHidden(true)
     }
 
     // MARK: - Geometry
@@ -39,344 +48,57 @@ struct Glyph: View {
         var weight: CGFloat?
     }
 
-    static func geometry(_ kind: Kind) -> Geometry {
+    /// SF Symbol for each interface icon. `nil` means the mark is drawn by hand below, which is
+    /// reserved for brand shapes SF Symbols has no equivalent for: the Sharkbox fin and the distro
+    /// logos.
+    static func symbol(_ kind: Kind) -> String? {
         switch kind {
-        case .fin:
-            return Geometry(fills: [finPath()], strokes: [wavePath()], weight: 1.8)
-        case .play:
-            return Geometry(fills: [path { p in
-                p.move(to: .init(x: 7, y: 4.5)); p.addLine(to: .init(x: 19, y: 12))
-                p.addLine(to: .init(x: 7, y: 19.5)); p.closeSubpath()
-            }])
-        case .stop:
-            return Geometry(fills: [Path(roundedRect: CGRect(x: 6, y: 6, width: 12, height: 12), cornerRadius: 2.2)])
-        case .pause:
-            return Geometry(fills: [Path(roundedRect: CGRect(x: 6.5, y: 5, width: 3.6, height: 14), cornerRadius: 1.4),
-                                    Path(roundedRect: CGRect(x: 13.9, y: 5, width: 3.6, height: 14), cornerRadius: 1.4)])
-        case .restart, .refresh:
-            return Geometry(fills: [path { p in            // arrow head
-                p.move(to: .init(x: 18.2, y: 3)); p.addLine(to: .init(x: 20.5, y: 8.2))
-                p.addLine(to: .init(x: 15, y: 7.6)); p.closeSubpath()
-            }], strokes: [path { p in
-                p.addArc(center: .init(x: 12, y: 12.6), radius: 7.4,
-                         startAngle: .degrees(-58), endAngle: .degrees(250), clockwise: false)
-            }])
-        case .power:
-            return Geometry(strokes: [path { p in
-                p.addArc(center: .init(x: 12, y: 13), radius: 7,
-                         startAngle: .degrees(-62), endAngle: .degrees(242), clockwise: false)
-            }, path { p in
-                p.move(to: .init(x: 12, y: 3.4)); p.addLine(to: .init(x: 12, y: 11))
-            }])
-        case .terminal:
-            return Geometry(strokes: [
-                Path(roundedRect: CGRect(x: 2.5, y: 4, width: 19, height: 16), cornerRadius: 3),
-                path { p in
-                    p.move(to: .init(x: 7, y: 10)); p.addLine(to: .init(x: 10.4, y: 13)); p.addLine(to: .init(x: 7, y: 16))
-                },
-                path { p in p.move(to: .init(x: 12.8, y: 16.2)); p.addLine(to: .init(x: 17, y: 16.2)) },
-            ])
-        case .trash:
-            return Geometry(strokes: [
-                path { p in p.move(to: .init(x: 3.6, y: 6.4)); p.addLine(to: .init(x: 20.4, y: 6.4)) },
-                path { p in
-                    p.move(to: .init(x: 9, y: 6.2)); p.addLine(to: .init(x: 9.6, y: 3.6)); p.addLine(to: .init(x: 14.4, y: 3.6))
-                    p.addLine(to: .init(x: 15, y: 6.2))
-                },
-                path { p in
-                    p.move(to: .init(x: 5.6, y: 6.6)); p.addLine(to: .init(x: 6.8, y: 20.2))
-                    p.addLine(to: .init(x: 17.2, y: 20.2)); p.addLine(to: .init(x: 18.4, y: 6.6))
-                },
-                path { p in p.move(to: .init(x: 10.2, y: 10)); p.addLine(to: .init(x: 10.6, y: 16.8)) },
-                path { p in p.move(to: .init(x: 13.8, y: 10)); p.addLine(to: .init(x: 13.4, y: 16.8)) },
-            ])
-        case .docker:
-            // A whale carrying stacked containers.
-            var boxes: [Path] = []
-            for (col, row) in [(0, 0), (1, 0), (2, 0), (1, 1)] {
-                boxes.append(Path(roundedRect: CGRect(x: 6.4 + Double(col) * 3.7, y: 11.4 - Double(row) * 3.4,
-                                                      width: 3.1, height: 2.9), cornerRadius: 0.5))
-            }
-            let body = path { p in
-                p.move(to: .init(x: 2.2, y: 13.4))
-                p.addLine(to: .init(x: 20.4, y: 13.4))
-                p.addCurve(to: .init(x: 11, y: 20.4), control1: .init(x: 20.4, y: 18.6), control2: .init(x: 16.6, y: 20.4))
-                p.addCurve(to: .init(x: 2.2, y: 13.4), control1: .init(x: 6, y: 20.4), control2: .init(x: 3.2, y: 17))
-                p.closeSubpath()
-            }
-            return Geometry(fills: boxes + [body])
-        case .plus:
-            return Geometry(strokes: [path { p in
-                p.move(to: .init(x: 12, y: 5)); p.addLine(to: .init(x: 12, y: 19))
-                p.move(to: .init(x: 5, y: 12)); p.addLine(to: .init(x: 19, y: 12))
-            }], weight: 2.1)
-        case .star, .starOutline:
-            let star = path { p in
-                for i in 0..<5 {
-                    let outer = Angle.degrees(Double(i) * 72 - 90).radians
-                    let inner = Angle.degrees(Double(i) * 72 - 54).radians
-                    let po = CGPoint(x: 12 + cos(outer) * 8.4, y: 12 + sin(outer) * 8.4)
-                    let pi = CGPoint(x: 12 + cos(inner) * 3.6, y: 12 + sin(inner) * 3.6)
-                    if i == 0 { p.move(to: po) } else { p.addLine(to: po) }
-                    p.addLine(to: pi)
-                }
-                p.closeSubpath()
-            }
-            return kind == .star ? Geometry(fills: [star]) : Geometry(strokes: [star], weight: 1.5)
-        case .gear:
-            var teeth = Path()
-            for i in 0..<8 {
-                let a = Angle.degrees(Double(i) * 45).radians
-                let r = CGRect(x: -1.7, y: -9.6, width: 3.4, height: 4.4)
-                var t = Transform2D()
-                t.rotate(a); t.translate(12, 12)
-                teeth.addPath(Path(roundedRect: r, cornerRadius: 0.8), transform: t.affine)
-            }
-            return Geometry(fills: [teeth], strokes: [
-                path { p in p.addEllipse(in: CGRect(x: 4.6, y: 4.6, width: 14.8, height: 14.8)) },
-                path { p in p.addEllipse(in: CGRect(x: 9, y: 9, width: 6, height: 6)) },
-            ], weight: 2.0)
-        case .cpu:
-            var pins = Path()
-            for i in 0..<3 {
-                let o = 7.0 + Double(i) * 5
-                pins.addRect(CGRect(x: o - 0.55, y: 1.6, width: 1.1, height: 3))
-                pins.addRect(CGRect(x: o - 0.55, y: 19.4, width: 1.1, height: 3))
-                pins.addRect(CGRect(x: 1.6, y: o - 0.55, width: 3, height: 1.1))
-                pins.addRect(CGRect(x: 19.4, y: o - 0.55, width: 3, height: 1.1))
-            }
-            return Geometry(fills: [pins], strokes: [
-                Path(roundedRect: CGRect(x: 4.6, y: 4.6, width: 14.8, height: 14.8), cornerRadius: 2.6),
-                Path(roundedRect: CGRect(x: 9, y: 9, width: 6, height: 6), cornerRadius: 1.2),
-            ])
-        case .memory:
-            var pins = Path()
-            for i in 0..<6 { pins.addRect(CGRect(x: 5.2 + Double(i) * 2.6, y: 16.4, width: 1.5, height: 3.2)) }
-            return Geometry(fills: [pins], strokes: [
-                Path(roundedRect: CGRect(x: 3, y: 5, width: 18, height: 11.4), cornerRadius: 1.8),
-                path { p in
-                    p.addRect(CGRect(x: 6, y: 8, width: 3.4, height: 5.4))
-                    p.addRect(CGRect(x: 10.6, y: 8, width: 3.4, height: 5.4))
-                    p.addRect(CGRect(x: 15.2, y: 8, width: 3.4, height: 5.4))
-                },
-            ], weight: 1.5)
-        case .disk:
-            return Geometry(strokes: [
-                path { p in p.addEllipse(in: CGRect(x: 3.4, y: 3.2, width: 17.2, height: 5.4)) },
-                path { p in
-                    p.move(to: .init(x: 3.4, y: 5.9)); p.addLine(to: .init(x: 3.4, y: 18.1))
-                    p.addArc(center: .init(x: 12, y: 18.1), radius: 8.6,
-                             startAngle: .degrees(180), endAngle: .degrees(0), clockwise: true)
-                    p.addLine(to: .init(x: 20.6, y: 5.9))
-                },
-                path { p in
-                    p.addArc(center: .init(x: 12, y: 12), radius: 8.6,
-                             startAngle: .degrees(160), endAngle: .degrees(20), clockwise: true)
-                },
-            ], weight: 1.5)
-        case .network:
-            return Geometry(fills: [
-                path { p in p.addEllipse(in: CGRect(x: 9.6, y: 2.4, width: 4.8, height: 4.8)) },
-                path { p in p.addEllipse(in: CGRect(x: 2.4, y: 16.4, width: 4.8, height: 4.8)) },
-                path { p in p.addEllipse(in: CGRect(x: 16.8, y: 16.4, width: 4.8, height: 4.8)) },
-            ], strokes: [path { p in
-                p.move(to: .init(x: 12, y: 7.6)); p.addLine(to: .init(x: 12, y: 12))
-                p.move(to: .init(x: 4.8, y: 16)); p.addLine(to: .init(x: 4.8, y: 12)); p.addLine(to: .init(x: 19.2, y: 12))
-                p.addLine(to: .init(x: 19.2, y: 16))
-            }], weight: 1.5)
-        case .folder:
-            return Geometry(strokes: [path { p in
-                p.move(to: .init(x: 3, y: 18.6)); p.addLine(to: .init(x: 3, y: 6))
-                p.addLine(to: .init(x: 9.4, y: 6)); p.addLine(to: .init(x: 11.4, y: 8.6))
-                p.addLine(to: .init(x: 21, y: 8.6)); p.addLine(to: .init(x: 21, y: 18.6))
-                p.closeSubpath()
-            }])
-        case .key:
-            return Geometry(strokes: [
-                path { p in p.addEllipse(in: CGRect(x: 3.2, y: 8.4, width: 7.6, height: 7.6)) },
-                path { p in
-                    p.move(to: .init(x: 10.4, y: 12.2)); p.addLine(to: .init(x: 21, y: 12.2))
-                    p.move(to: .init(x: 17.6, y: 12.2)); p.addLine(to: .init(x: 17.6, y: 15.8))
-                    p.move(to: .init(x: 20.4, y: 12.2)); p.addLine(to: .init(x: 20.4, y: 16.4))
-                },
-            ])
-        case .clock:
-            return Geometry(strokes: [
-                path { p in p.addEllipse(in: CGRect(x: 3.2, y: 3.2, width: 17.6, height: 17.6)) },
-                path { p in
-                    p.move(to: .init(x: 12, y: 7.4)); p.addLine(to: .init(x: 12, y: 12.4)); p.addLine(to: .init(x: 15.8, y: 14.6))
-                },
-            ])
-        case .wrench:
-            return Geometry(fills: [path { p in
-                p.move(to: .init(x: 14.8, y: 2.6))
-                p.addLine(to: .init(x: 11.6, y: 5.8)); p.addLine(to: .init(x: 13.2, y: 9.2)); p.addLine(to: .init(x: 16.6, y: 10.8))
-                p.addLine(to: .init(x: 19.8, y: 7.6))
-                p.addCurve(to: .init(x: 8.2, y: 17.4), control1: .init(x: 21.6, y: 15.2), control2: .init(x: 13.4, y: 20.2))
-                p.addLine(to: .init(x: 5.2, y: 20.4)); p.addLine(to: .init(x: 3, y: 18.2)); p.addLine(to: .init(x: 6.2, y: 15.2))
-                p.addCurve(to: .init(x: 14.8, y: 2.6), control1: .init(x: 3, y: 9.4), control2: .init(x: 8.2, y: 1.2))
-                p.closeSubpath()
-            }])
-        case .download, .upload:
-            let up = kind == .upload
-            return Geometry(fills: [path { p in
-                let y = up ? 5.0 : 15.6
-                p.move(to: .init(x: 12, y: up ? 3.0 : 17.6)); p.addLine(to: .init(x: 8.2, y: y))
-                p.addLine(to: .init(x: 15.8, y: y)); p.closeSubpath()
-            }], strokes: [
-                path { p in p.move(to: .init(x: 12, y: up ? 15.6 : 4.2)); p.addLine(to: .init(x: 12, y: up ? 4.6 : 16)) },
-                path { p in
-                    p.move(to: .init(x: 4.4, y: 19.8)); p.addLine(to: .init(x: 19.6, y: 19.8))
-                },
-            ])
-        case .check:
-            return Geometry(strokes: [path { p in
-                p.move(to: .init(x: 4.6, y: 12.6)); p.addLine(to: .init(x: 9.8, y: 17.8)); p.addLine(to: .init(x: 19.4, y: 6.4))
-            }], weight: 2.3)
-        case .xmark:
-            return Geometry(strokes: [path { p in
-                p.move(to: .init(x: 6, y: 6)); p.addLine(to: .init(x: 18, y: 18))
-                p.move(to: .init(x: 18, y: 6)); p.addLine(to: .init(x: 6, y: 18))
-            }], weight: 2.1)
-        case .warning:
-            return Geometry(fills: [path { p in p.addEllipse(in: CGRect(x: 10.9, y: 16.4, width: 2.2, height: 2.2)) }],
-                            strokes: [
-                                path { p in
-                                    p.move(to: .init(x: 12, y: 3.2)); p.addLine(to: .init(x: 22, y: 20.4))
-                                    p.addLine(to: .init(x: 2, y: 20.4)); p.closeSubpath()
-                                },
-                                path { p in p.move(to: .init(x: 12, y: 9.4)); p.addLine(to: .init(x: 12, y: 14.4)) },
-                            ])
-        case .info:
-            return Geometry(fills: [path { p in p.addEllipse(in: CGRect(x: 10.9, y: 6.2, width: 2.2, height: 2.2)) }],
-                            strokes: [
-                                path { p in p.addEllipse(in: CGRect(x: 3.2, y: 3.2, width: 17.6, height: 17.6)) },
-                                path { p in p.move(to: .init(x: 12, y: 11)); p.addLine(to: .init(x: 12, y: 17.4)) },
-                            ])
-        case .ellipsis:
-            return Geometry(fills: (0..<3).map { i in
-                path { p in p.addEllipse(in: CGRect(x: 4.4 + Double(i) * 6.2, y: 10.9, width: 2.4, height: 2.4)) }
-            })
-        case .chevronRight:
-            return Geometry(strokes: [path { p in
-                p.move(to: .init(x: 9.5, y: 5.5)); p.addLine(to: .init(x: 16, y: 12)); p.addLine(to: .init(x: 9.5, y: 18.5))
-            }], weight: 2.0)
-        case .chevronDown:
-            return Geometry(strokes: [path { p in
-                p.move(to: .init(x: 5.5, y: 9.5)); p.addLine(to: .init(x: 12, y: 16)); p.addLine(to: .init(x: 18.5, y: 9.5))
-            }], weight: 2.0)
-        case .copy:
-            return Geometry(strokes: [
-                Path(roundedRect: CGRect(x: 8, y: 3.4, width: 12.6, height: 12.6), cornerRadius: 2.4),
-                path { p in
-                    p.move(to: .init(x: 16, y: 19)); p.addLine(to: .init(x: 16, y: 20.6))
-                    p.addLine(to: .init(x: 3.4, y: 20.6)); p.addLine(to: .init(x: 3.4, y: 8))
-                    p.addLine(to: .init(x: 5, y: 8))
-                },
-            ], weight: 1.6)
-        case .bolt:
-            return Geometry(fills: [path { p in
-                p.move(to: .init(x: 13.6, y: 2)); p.addLine(to: .init(x: 5.4, y: 13.4)); p.addLine(to: .init(x: 11, y: 13.4))
-                p.addLine(to: .init(x: 10, y: 22)); p.addLine(to: .init(x: 18.6, y: 10.4)); p.addLine(to: .init(x: 13, y: 10.4))
-                p.closeSubpath()
-            }])
-        case .window:
-            return Geometry(fills: [path { p in p.addRect(CGRect(x: 3, y: 4.4, width: 18, height: 3.4)) }],
-                            strokes: [Path(roundedRect: CGRect(x: 3, y: 4.4, width: 18, height: 15.2), cornerRadius: 2.4)])
-        case .shield:
-            return Geometry(strokes: [path { p in
-                p.move(to: .init(x: 12, y: 2.8)); p.addLine(to: .init(x: 20, y: 6))
-                p.addCurve(to: .init(x: 12, y: 21.2), control1: .init(x: 20, y: 15), control2: .init(x: 16.4, y: 19.4))
-                p.addCurve(to: .init(x: 4, y: 6), control1: .init(x: 7.6, y: 19.4), control2: .init(x: 4, y: 15))
-                p.closeSubpath()
-            }])
-        case .image:
-            return Geometry(fills: [path { p in p.addEllipse(in: CGRect(x: 7, y: 7.4, width: 3, height: 3)) }],
-                            strokes: [
-                                Path(roundedRect: CGRect(x: 3, y: 4.4, width: 18, height: 15.2), cornerRadius: 2.6),
-                                path { p in
-                                    p.move(to: .init(x: 3.6, y: 17)); p.addLine(to: .init(x: 9.4, y: 11.6))
-                                    p.addLine(to: .init(x: 14, y: 15.4)); p.addLine(to: .init(x: 17.2, y: 12.8))
-                                    p.addLine(to: .init(x: 20.4, y: 15.6))
-                                },
-                            ], weight: 1.6)
-        case .list:
-            var dots = Path()
-            var lines = Path()
-            for i in 0..<3 {
-                let y = 6.6 + Double(i) * 5.4
-                dots.addEllipse(in: CGRect(x: 3.4, y: y - 1.1, width: 2.2, height: 2.2))
-                lines.move(to: .init(x: 8.6, y: y)); lines.addLine(to: .init(x: 20.4, y: y))
-            }
-            return Geometry(fills: [dots], strokes: [lines], weight: 1.7)
-        case .search:
-            return Geometry(strokes: [
-                path { p in p.addEllipse(in: CGRect(x: 3.6, y: 3.6, width: 13, height: 13)) },
-                path { p in p.move(to: .init(x: 15.8, y: 15.8)); p.addLine(to: .init(x: 20.6, y: 20.6)) },
-            ])
-        case .sliders:
-            var knobs = Path()
-            var rails = Path()
-            let ys = [7.0, 12.0, 17.0]
-            let xs = [15.4, 8.6, 12.8]
-            for (y, x) in zip(ys, xs) {
-                rails.move(to: .init(x: 3.4, y: y)); rails.addLine(to: .init(x: 20.6, y: y))
-                knobs.addEllipse(in: CGRect(x: x - 2.1, y: y - 2.1, width: 4.2, height: 4.2))
-            }
-            return Geometry(fills: [knobs], strokes: [rails], weight: 1.6)
-        case .link:
-            return Geometry(strokes: [
-                path { p in
-                    p.move(to: .init(x: 10, y: 14)); p.addLine(to: .init(x: 14, y: 10))
-                },
-                path { p in
-                    p.move(to: .init(x: 13.2, y: 7)); p.addLine(to: .init(x: 15.6, y: 4.6))
-                    p.addArc(center: .init(x: 17.4, y: 6.6), radius: 2.8, startAngle: .degrees(180), endAngle: .degrees(0), clockwise: false)
-                    p.addLine(to: .init(x: 17, y: 10.8))
-                },
-                path { p in
-                    p.move(to: .init(x: 10.8, y: 17)); p.addLine(to: .init(x: 8.4, y: 19.4))
-                    p.addArc(center: .init(x: 6.6, y: 17.4), radius: 2.8, startAngle: .degrees(0), endAngle: .degrees(180), clockwise: false)
-                    p.addLine(to: .init(x: 7, y: 13.2))
-                },
-            ], weight: 1.7)
-        case .ubuntu:
-            var dots = Path()
-            for i in 0..<3 {
-                let a = Angle.degrees(Double(i) * 120 - 30).radians
-                dots.addEllipse(in: CGRect(x: 12 + cos(a) * 7.4 - 2.5, y: 12 + sin(a) * 7.4 - 2.5, width: 5, height: 5))
-            }
-            return Geometry(fills: [dots], strokes: [
-                path { p in p.addEllipse(in: CGRect(x: 8.4, y: 8.4, width: 7.2, height: 7.2)) },
-            ], weight: 2.0)
-        case .debian:
-            return Geometry(strokes: [path { p in
-                p.addArc(center: .init(x: 12.6, y: 11.6), radius: 7.2,
-                         startAngle: .degrees(-40), endAngle: .degrees(250), clockwise: false)
-            }, path { p in
-                p.addArc(center: .init(x: 12.6, y: 11.6), radius: 3.6,
-                         startAngle: .degrees(30), endAngle: .degrees(300), clockwise: false)
-            }], weight: 2.0)
-        case .tux:
-            return Geometry(fills: [path { p in
-                p.move(to: .init(x: 12, y: 2.6))
-                p.addCurve(to: .init(x: 16.6, y: 9), control1: .init(x: 15.4, y: 2.6), control2: .init(x: 16.6, y: 5.4))
-                p.addCurve(to: .init(x: 19.4, y: 19), control1: .init(x: 16.6, y: 13), control2: .init(x: 19.4, y: 14.6))
-                p.addCurve(to: .init(x: 12, y: 21.4), control1: .init(x: 19.4, y: 21), control2: .init(x: 15.4, y: 21.4))
-                p.addCurve(to: .init(x: 4.6, y: 19), control1: .init(x: 8.6, y: 21.4), control2: .init(x: 4.6, y: 21))
-                p.addCurve(to: .init(x: 7.4, y: 9), control1: .init(x: 4.6, y: 14.6), control2: .init(x: 7.4, y: 13))
-                p.addCurve(to: .init(x: 12, y: 2.6), control1: .init(x: 7.4, y: 5.4), control2: .init(x: 8.6, y: 2.6))
-                p.closeSubpath()
-            }])
+        case .fin: return nil
+        case .play:         return "play.fill"
+        case .stop:         return "stop.fill"
+        case .pause:        return "pause.fill"
+        case .restart:      return "arrow.clockwise"
+        case .refresh:      return "arrow.clockwise"
+        case .terminal:     return "terminal"
+        case .trash:        return "trash"
+        case .docker:       return "shippingbox"
+        case .plus:         return "plus"
+        case .star:         return "star.fill"
+        case .starOutline:  return "star"
+        case .gear:         return "gearshape"
+        case .cpu:          return "cpu"
+        case .memory:       return "memorychip"
+        case .disk:         return "internaldrive"
+        case .network:      return "network"
+        case .folder:       return "folder"
+        case .key:          return "key"
+        case .clock:        return "clock"
+        case .wrench:       return "wrench.and.screwdriver"
+        case .download:     return "arrow.down.circle"
+        case .upload:       return "arrow.up.circle"
+        case .check:        return "checkmark"
+        case .xmark:        return "xmark"
+        case .warning:      return "exclamationmark.triangle.fill"
+        case .info:         return "info.circle"
+        case .ellipsis:     return "ellipsis"
+        case .chevronRight: return "chevron.right"
+        case .chevronDown:  return "chevron.down"
+        case .copy:         return "doc.on.doc"
+        case .bolt:         return "bolt.fill"
+        case .window:       return "macwindow"
+        case .shield:       return "lock.shield"
+        case .image:        return "opticaldisc"
+        case .list:         return "list.bullet"
+        case .search:       return "magnifyingglass"
+        case .sliders:      return "slider.horizontal.3"
+        case .link:         return "link"
+        case .power:        return "power"
         }
     }
 
-    // MARK: - Building blocks
-
-    static func path(_ build: (inout Path) -> Void) -> Path {
-        var p = Path()
-        build(&p)
-        return p
+    static func geometry(_ kind: Kind) -> Geometry {
+        guard kind == .fin else { return Geometry() }
+        return Geometry(fills: [finPath()], strokes: [wavePath()], weight: 1.8)
     }
 
     static func finPath() -> Path {
@@ -397,33 +119,126 @@ struct Glyph: View {
         }
     }
 
-    /// Tiny affine helper so the gear teeth can be rotated without pulling in Core Graphics contexts.
-    struct Transform2D {
-        var affine = CGAffineTransform.identity
-        mutating func rotate(_ radians: Double) { affine = affine.rotated(by: radians) }
-        mutating func translate(_ x: Double, _ y: Double) { affine = CGAffineTransform(translationX: x, y: y).concatenating(affine) }
+    static func path(_ build: (inout Path) -> Void) -> Path {
+        var p = Path()
+        build(&p)
+        return p
     }
 }
 
-/// The distro mark for a machine, picked from its distro id.
+/// Distro marks: the real logos — Canonical's Circle of Friends and Debian's swirl — in white on a
+/// disc of the distro's own brand colour. These are shapes people already recognise, so a hand-drawn
+/// approximation of one reads as a mistake rather than as an icon; the SVGs in Resources/ are the
+/// official files, bundled unchanged into Contents/Resources by the Makefile.
+struct DistroArt {
+    var tint: Color
+    /// The brand mark, drawn as a template image (white) over the disc.
+    var logo: NSImage? = nil
+    /// Padding around the mark as a fraction of the mark's frame. The swirl is portrait, so it gets
+    /// less than the near-square Circle of Friends and still ends up narrower.
+    var inset: CGFloat = 0.17
+    /// Fallback line art in the 24-pt Glyph grid, used when there is no logo.
+    var strokes: [Path] = []
+    var strokeWidth: CGFloat = 1.9
+
+    static let ubuntuOrange = Color(red: 0.914, green: 0.329, blue: 0.125)   // #E95420
+    static let debianRed = Color(red: 0.843, green: 0.039, blue: 0.325)      // #D70A53
+
+    static func forDistro(_ distro: String) -> DistroArt {
+        if distro.hasPrefix("ubuntu"), let logo = ubuntuLogo {
+            return DistroArt(tint: ubuntuOrange, logo: logo, inset: 0.17)
+        }
+        if distro.hasPrefix("debian"), let logo = debianLogo {
+            return DistroArt(tint: debianRed, logo: logo, inset: 0.13)
+        }
+        return generic
+    }
+
+    static let ubuntuLogo = bundled("ubuntu-cof")
+    static let debianLogo = bundled("debian-swirl")
+
+    /// Loaded once from Contents/Resources. NSImage decodes SVG natively on macOS 11+, so the marks
+    /// stay vector at every size. Nil when the binary runs outside its bundle (a bare build from the
+    /// Makefile's swiftc line), in which case the distro gets the generic mark instead of nothing.
+    static func bundled(_ name: String) -> NSImage? {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "svg"),
+              let image = NSImage(contentsOf: url) else { return nil }
+        image.isTemplate = true
+        return image
+    }
+
+    /// Anything else: a neutral slate disc with a shell prompt. A vaguely penguin-shaped blob read
+    /// as a lightbulb at 17 pt, which is worse than not being a penguin at all.
+    static var generic: DistroArt {
+        DistroArt(tint: Color(red: 0.24, green: 0.26, blue: 0.29), strokes: [
+            Glyph.path { p in
+                p.move(to: .init(x: 8.0, y: 8.6))
+                p.addLine(to: .init(x: 11.8, y: 12.0))
+                p.addLine(to: .init(x: 8.0, y: 15.4))
+            },
+            Glyph.path { p in
+                p.move(to: .init(x: 13.4, y: 15.6))
+                p.addLine(to: .init(x: 16.6, y: 15.6))
+            },
+        ])
+    }
+}
+
 struct DistroMark: View {
     let distro: String
     var size: CGFloat = 16
-    var color: Color = .primary
 
     var body: some View {
-        Glyph(kind: kind, size: size, color: color)
-    }
-
-    private var kind: Glyph.Kind {
-        if distro.hasPrefix("ubuntu") { return .ubuntu }
-        if distro.hasPrefix("debian") { return .debian }
-        return .tux
+        let art = DistroArt.forDistro(distro)
+        ZStack {
+            Circle().fill(art.tint).padding(size / 24)
+            if let logo = art.logo {
+                Image(nsImage: logo)
+                    .renderingMode(.template)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .foregroundStyle(.white)
+                    .padding(size * art.inset)
+            } else {
+                Canvas(rendersAsynchronously: false) { ctx, _ in
+                    ctx.scaleBy(x: size / 24, y: size / 24)
+                    for p in art.strokes {
+                        ctx.stroke(p, with: .color(.white),
+                                   style: StrokeStyle(lineWidth: art.strokeWidth, lineCap: .round))
+                    }
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
     }
 }
 
-/// The app mark: a fin over water in a rounded, gradient-filled tile. Used in the about box,
-/// the empty state and the New Machine sheet.
+/// Indeterminate ring: a faint full track with a rotating arc. Deliberately stateless —
+/// `TimelineView(.animation)` derives the angle from the clock, because this target has no `@State`
+/// (see MainView.swift:5) and therefore nothing to hang a `withAnimation` on. The stock macOS
+/// ProgressView is a segmented barber-pole that reads as a smudge below ~16 pt.
+struct RingSpinner: View {
+    var size: CGFloat = 18
+    var lineWidth: CGFloat = 2.5
+    var color: Color = .accentColor
+
+    var body: some View {
+        TimelineView(.animation) { ctx in
+            let turn = ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1)
+            ZStack {
+                Circle().stroke(color.opacity(0.18), lineWidth: lineWidth)
+                Circle()
+                    .trim(from: 0, to: 0.28)
+                    .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                    .rotationEffect(.degrees(turn * 360))
+            }
+            .frame(width: size, height: size)
+        }
+        .accessibilityHidden(true)
+    }
+}
+
 struct AppMark: View {
     var size: CGFloat = 64
 

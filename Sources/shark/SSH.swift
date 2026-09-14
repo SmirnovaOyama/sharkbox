@@ -72,11 +72,24 @@ enum SSHConfig {
     static func install() throws -> Bool {
         let sshDir = Paths.home.appendingPathComponent(".ssh")
         let cfg = sshDir.appendingPathComponent("config")
-        let existing = (try? String(contentsOf: cfg, encoding: .utf8)) ?? ""
+        let fm = FileManager.default
+        var existing = ""
+        if fm.fileExists(atPath: cfg.path) {
+            // An unreadable config must never look like an empty one. `try?` + "" used to drop the
+            // user's entire ~/.ssh/config — and skip the backup below, which is keyed on it being
+            // non-empty — for any read failure, invalid UTF-8 being the practical one.
+            guard let text = try? String(contentsOf: cfg, encoding: .utf8) else {
+                throw SharkError("~/.ssh/config exists but could not be read as UTF-8; refusing to "
+                    + "overwrite it. Add this line to it yourself:\n  \(includeLine)")
+            }
+            existing = text
+        }
         if existing.contains(includeLine) { return false }
-        try FileManager.default.createDirectory(at: sshDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try fm.createDirectory(at: sshDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         if !existing.isEmpty {
-            try? FileManager.default.copyItem(at: cfg, to: sshDir.appendingPathComponent("config.sharkbox-backup"))
+            let backup = sshDir.appendingPathComponent("config.sharkbox-backup")
+            try? fm.removeItem(at: backup)          // copyItem refuses an existing destination, so
+            try? fm.copyItem(at: cfg, to: backup)   // without this a rerun keeps a stale backup
         }
         let new = "\(includeLine)\n" + (existing.isEmpty ? "" : "\n" + existing)
         try new.write(to: cfg, atomically: true, encoding: .utf8)

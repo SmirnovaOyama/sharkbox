@@ -68,8 +68,8 @@ macOS 的用户名与 uid，共享目录的文件归属因此保持正确，并�
 
 ## 应用程序
 
-`make install` 会一并安装 `Sharkbox.app`。图标为代码绘制的矢量路径
-（`Sources/SharkboxApp/Icons.swift`），未使用 SF Symbols。
+`make install` 会一并安装 `Sharkbox.app`。界面图标使用 SF Symbols；发行版标志为 Ubuntu 与 Debian
+的官方 logo，以 SVG 形式从 `Resources/` 打包进应用。
 
 - 菜单栏：显示各机器的状态与地址，提供启动、停止、终端按钮，以及包含复制与维护操作的子菜单。
 - 主窗口：侧栏按运行状态分组，带搜索过滤与磁盘占用信息；详情分为概览、控制台与资源三个标签页，

@@ -110,11 +110,12 @@ struct MenuBarView: View {
 
 struct MenuMachineRow: View {
     @EnvironmentObject var store: MachineStore
+    @Environment(\.openWindow) private var openWindow
     let machine: MachineInfo
 
     var body: some View {
         HStack(spacing: 8) {
-            DistroMark(distro: machine.distro, size: 15, color: machine.isRunning ? .accentColor : .secondary)
+            DistroMark(distro: machine.distro, size: 15)
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 4) {
                     Text(machine.name).fontWeight(.medium)
@@ -135,7 +136,10 @@ struct MenuMachineRow: View {
             }
             Menu {
                 MachineMenuItems(machine: machine, requestDelete: {
-                    NotificationCenter.default.post(name: .requestDeleteMachine, object: machine.name)
+                    // The confirmation sheet lives in the main window, which is very often closed
+                    // here — open it first, or this is a dead click.
+                    store.requestDelete(machine.name)
+                    openWindow(id: "main")
                     NSApp.activate(ignoringOtherApps: true)
                 })
             } label: {

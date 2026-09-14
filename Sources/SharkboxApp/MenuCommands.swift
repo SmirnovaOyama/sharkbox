@@ -69,7 +69,8 @@ struct SharkboxCommands: Commands {
                 } else {
                     ForEach(store.machines) { m in
                         Button("\(m.name)…", role: .destructive) {
-                            NotificationCenter.default.post(name: .requestDeleteMachine, object: m.name)
+                            store.requestDelete(m.name)
+                            open("main")
                         }
                     }
                 }
@@ -83,7 +84,9 @@ struct SharkboxCommands: Commands {
                         Text("\(Fmt.bytes(img.bytes)) on disk")
                         Divider()
                         Button("Create a Machine…") {
-                            NotificationCenter.default.post(name: .requestNewMachine, object: img.id)
+                            // Set this *before* opening: the window may not exist yet, so a
+                            // notification posted here would land with nobody listening.
+                            store.pendingNewMachineDistro = img.id
                             open("new-machine")
                         }
                         Button("Delete Cached Image", role: .destructive) { store.removeImage(img.id) }
@@ -129,7 +132,5 @@ struct SharkboxCommands: Commands {
 }
 
 extension Notification.Name {
-    static let requestDeleteMachine = Notification.Name("sharkbox.requestDeleteMachine")
-    static let requestNewMachine = Notification.Name("sharkbox.requestNewMachine")
     static let selectMachine = Notification.Name("sharkbox.selectMachine")
 }

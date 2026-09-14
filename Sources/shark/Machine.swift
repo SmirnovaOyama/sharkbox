@@ -82,7 +82,19 @@ final class Machine {
 
     var pid: pid_t? {
         guard let s = readString(pidFile), let p = Int32(s), p > 0 else { return nil }
-        return kill(p, 0) == 0 ? p : nil
+        guard kill(p, 0) == 0, Machine.isRunnerProcess(p) else { return nil }
+        return p
+    }
+
+    /// A recorded pid is only a *number*. A runner that dies without running its cleanup — `kill -9`,
+    /// a crash, a host reboot — leaves runner.pid behind, and after a reboot low pids are handed out
+    /// again almost immediately. `stopMachine` escalates SIGTERM → SIGUSR1 → SIGKILL, so trusting a
+    /// bare `kill(p, 0)` means shark can kill an unrelated process of the user's. Confirm the pid
+    /// really is a shark binary first.
+    static func isRunnerProcess(_ p: pid_t) -> Bool {
+        var buf = [CChar](repeating: 0, count: 4096)
+        guard proc_pidpath(p, &buf, UInt32(buf.count)) > 0 else { return false }
+        return String(cString: buf).hasSuffix("/shark")
     }
 
     var isRunning: Bool { pid != nil }
