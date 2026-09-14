@@ -70,8 +70,8 @@ on 192.168.64.0/24 per machine.
 
 ## Application
 
-`make install` also installs `Sharkbox.app`. Icons are vector paths drawn in code
-(`Sources/SharkboxApp/Icons.swift`) rather than SF Symbols.
+`make install` also installs `Sharkbox.app`. Interface icons are SF Symbols; the distro marks are the
+official Ubuntu and Debian logos, bundled as SVG from `Resources/`.
 
 - Menu bar: state and address per machine, start, stop and terminal buttons, and a submenu with the
   copy and maintenance actions.

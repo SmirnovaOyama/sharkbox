@@ -10,6 +10,7 @@ CLI_SOURCES  = $(wildcard Sources/shark/*.swift)
 SHARED       = Sources/shark/Util.swift Sources/shark/Paths.swift Sources/shark/Machine.swift \
                Sources/shark/Distro.swift Sources/shark/Images.swift Sources/shark/SSH.swift
 GUI_SOURCES  = $(wildcard Sources/SharkboxApp/*.swift)
+GUI_ASSETS   = Resources/ubuntu-cof.svg Resources/debian-swirl.svg   # distro logos, loaded by name from Contents/Resources
 TARGET       = arm64-apple-macos14.0
 # SwiftUI's property wrappers are compiler macros on macOS 26+ SDKs; swiftc needs the SDK's plugin dir.
 SDKROOT     := $(shell xcrun --show-sdk-path)
@@ -40,7 +41,7 @@ build/Sharkbox.icns: scripts/MakeIcon.swift
 	rm -rf build/Sharkbox.iconset && build/makeicon build/Sharkbox.iconset
 	iconutil -c icns build/Sharkbox.iconset -o build/Sharkbox.icns
 
-$(APP_STAMP): $(BIN) $(GUI_SOURCES) $(SHARED) Resources/Info.plist build/Sharkbox.icns
+$(APP_STAMP): $(BIN) $(GUI_SOURCES) $(SHARED) $(GUI_ASSETS) Resources/Info.plist build/Sharkbox.icns
 	rm -rf $(APP)
 	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
 	swiftc -O -swift-version 5 -parse-as-library -target $(TARGET) $(PLUGIN_FLAGS) \
@@ -49,6 +50,7 @@ $(APP_STAMP): $(BIN) $(GUI_SOURCES) $(SHARED) Resources/Info.plist build/Sharkbo
 	cp $(BIN) $(APP)/Contents/MacOS/shark
 	cp Resources/Info.plist $(APP)/Contents/Info.plist
 	cp build/Sharkbox.icns $(APP)/Contents/Resources/Sharkbox.icns
+	cp $(GUI_ASSETS) $(APP)/Contents/Resources/
 	codesign --force --sign - --entitlements $(ENTITLEMENTS) $(APP)/Contents/MacOS/shark
 	# codesign refuses a bundle carrying extended attributes, and clearing them is racy inside a
 	# synced folder: signing the nested binary above makes iCloud/Dropbox re-stamp

@@ -228,9 +228,9 @@ struct StatusDot: View {
 
     var body: some View {
         if machine.isTransitioning || store.busy.contains(machine.name) {
-            ProgressView().controlSize(.mini).scaleEffect(0.55).frame(width: 10, height: 10)
+            RingSpinner(size: 14, lineWidth: 2, color: .secondary)
         } else if machine.isRunning || machine.state == "error" {
-            Circle().fill(machine.stateColor).frame(width: 7, height: 7)
+            Circle().fill(machine.stateColor).frame(width: 7, height: 7).frame(width: 14, height: 14)
         }
         // Nothing for a stopped machine: the sidebar is already split into Running / Stopped and
         // every row spells out its state, so a grey haloed dot per row was pure noise.
@@ -568,10 +568,11 @@ struct TaskOutputView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 if task.finished {
-                    Glyph(kind: task.succeeded ? .check : .xmark, size: 13,
+                    Glyph(kind: task.succeeded ? .check : .xmark, size: 14,
                           color: task.succeeded ? .green : .red)
+                        .frame(width: 20, height: 20)
                 } else {
-                    ProgressView().controlSize(.small)
+                    RingSpinner(size: 20, lineWidth: 2.5)
                 }
                 Text(task.title).font(.headline)
                 Spacer()

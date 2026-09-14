@@ -126,57 +126,45 @@ struct Glyph: View {
     }
 }
 
-/// Distro logos, drawn in their own brand colours on a filled disc. These are marks people already
-/// recognise, so a grey monochrome approximation of one reads as a mistake rather than as an icon —
-/// which is exactly how the old hand-drawn versions looked in the sidebar.
+/// Distro marks: the real logos — Canonical's Circle of Friends and Debian's swirl — in white on a
+/// disc of the distro's own brand colour. These are shapes people already recognise, so a hand-drawn
+/// approximation of one reads as a mistake rather than as an icon; the SVGs in Resources/ are the
+/// official files, bundled unchanged into Contents/Resources by the Makefile.
 struct DistroArt {
     var tint: Color
-    var fills: [Path] = []      // white shapes on the disc
+    /// The brand mark, drawn as a template image (white) over the disc.
+    var logo: NSImage? = nil
+    /// Padding around the mark as a fraction of the mark's frame. The swirl is portrait, so it gets
+    /// less than the near-square Circle of Friends and still ends up narrower.
+    var inset: CGFloat = 0.17
+    /// Fallback line art in the 24-pt Glyph grid, used when there is no logo.
     var strokes: [Path] = []
-    var strokeWidth: CGFloat = 2.5
+    var strokeWidth: CGFloat = 1.9
 
-    static let disc = Path(ellipseIn: CGRect(x: 1, y: 1, width: 22, height: 22))
+    static let ubuntuOrange = Color(red: 0.914, green: 0.329, blue: 0.125)   // #E95420
+    static let debianRed = Color(red: 0.843, green: 0.039, blue: 0.325)      // #D70A53
 
     static func forDistro(_ distro: String) -> DistroArt {
-        if distro.hasPrefix("ubuntu") { return ubuntu }
-        if distro.hasPrefix("debian") { return debian }
+        if distro.hasPrefix("ubuntu"), let logo = ubuntuLogo {
+            return DistroArt(tint: ubuntuOrange, logo: logo, inset: 0.17)
+        }
+        if distro.hasPrefix("debian"), let logo = debianLogo {
+            return DistroArt(tint: debianRed, logo: logo, inset: 0.13)
+        }
         return generic
     }
 
-    /// Ubuntu's Circle of Friends: three white "heads" 120° apart, each sitting in a break of a
-    /// white ring, on Ubuntu orange (#E95420). Proportions matter here — the heads must float in
-    /// their gaps with orange all round them, or the mark collapses into a blob.
-    static var ubuntu: DistroArt {
-        let c = CGPoint(x: 12, y: 12)
-        let heads: [Double] = [180, 300, 60]        // left, upper right, lower right
-        let gap = 44.0
-        var marks: [Path] = []
-        for a in heads {
-            marks.append(ringSegment(center: c, inner: 4.0, outer: 6.1,
-                                     from: a + gap / 2, to: a + 120 - gap / 2))
-        }
-        for a in heads {
-            let r = 8.85, rad = a * .pi / 180
-            let p = CGPoint(x: c.x + cos(rad) * r, y: c.y + sin(rad) * r)
-            marks.append(Path(ellipseIn: CGRect(x: p.x - 1.9, y: p.y - 1.9, width: 3.8, height: 3.8)))
-        }
-        return DistroArt(tint: Color(red: 0.914, green: 0.329, blue: 0.125), fills: marks)
-    }
+    static let ubuntuLogo = bundled("ubuntu-cof")
+    static let debianLogo = bundled("debian-swirl")
 
-    /// Debian's swirl, as a real Archimedean spiral rather than two stacked arcs, on Debian red.
-    static var debian: DistroArt {
-        let c = CGPoint(x: 12, y: 12)
-        var spiral = Path()
-        let steps = 96
-        for i in 0...steps {
-            let t = Double(i) / Double(steps)
-            let ang = (-125 + t * 360 * 1.35) * .pi / 180
-            let r = 1.7 + t * 4.9
-            let pt = CGPoint(x: c.x + cos(ang) * r, y: c.y + sin(ang) * r)
-            if i == 0 { spiral.move(to: pt) } else { spiral.addLine(to: pt) }
-        }
-        return DistroArt(tint: Color(red: 0.843, green: 0.039, blue: 0.325),
-                         strokes: [spiral], strokeWidth: 1.9)
+    /// Loaded once from Contents/Resources. NSImage decodes SVG natively on macOS 11+, so the marks
+    /// stay vector at every size. Nil when the binary runs outside its bundle (a bare build from the
+    /// Makefile's swiftc line), in which case the distro gets the generic mark instead of nothing.
+    static func bundled(_ name: String) -> NSImage? {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "svg"),
+              let image = NSImage(contentsOf: url) else { return nil }
+        image.isTemplate = true
+        return image
     }
 
     /// Anything else: a neutral slate disc with a shell prompt. A vaguely penguin-shaped blob read
@@ -192,16 +180,7 @@ struct DistroArt {
                 p.move(to: .init(x: 13.4, y: 15.6))
                 p.addLine(to: .init(x: 16.6, y: 15.6))
             },
-        ], strokeWidth: 1.9)
-    }
-
-    /// A closed wedge of an annulus — the building block of the Ubuntu ring.
-    static func ringSegment(center: CGPoint, inner: Double, outer: Double, from: Double, to: Double) -> Path {
-        Glyph.path { p in
-            p.addArc(center: center, radius: outer, startAngle: .degrees(from), endAngle: .degrees(to), clockwise: false)
-            p.addArc(center: center, radius: inner, startAngle: .degrees(to), endAngle: .degrees(from), clockwise: true)
-            p.closeSubpath()
-        }
+        ])
     }
 }
 
@@ -210,17 +189,52 @@ struct DistroMark: View {
     var size: CGFloat = 16
 
     var body: some View {
-        Canvas(rendersAsynchronously: false) { ctx, _ in
-            ctx.scaleBy(x: size / 24, y: size / 24)
-            let art = DistroArt.forDistro(distro)
-            ctx.fill(DistroArt.disc, with: .color(art.tint))
-            for p in art.fills { ctx.fill(p, with: .color(.white)) }
-            for p in art.strokes {
-                ctx.stroke(p, with: .color(.white),
-                           style: StrokeStyle(lineWidth: art.strokeWidth, lineCap: .round))
+        let art = DistroArt.forDistro(distro)
+        ZStack {
+            Circle().fill(art.tint).padding(size / 24)
+            if let logo = art.logo {
+                Image(nsImage: logo)
+                    .renderingMode(.template)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .foregroundStyle(.white)
+                    .padding(size * art.inset)
+            } else {
+                Canvas(rendersAsynchronously: false) { ctx, _ in
+                    ctx.scaleBy(x: size / 24, y: size / 24)
+                    for p in art.strokes {
+                        ctx.stroke(p, with: .color(.white),
+                                   style: StrokeStyle(lineWidth: art.strokeWidth, lineCap: .round))
+                    }
+                }
             }
         }
         .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
+/// Indeterminate ring: a faint full track with a rotating arc. Deliberately stateless —
+/// `TimelineView(.animation)` derives the angle from the clock, because this target has no `@State`
+/// (see MainView.swift:5) and therefore nothing to hang a `withAnimation` on. The stock macOS
+/// ProgressView is a segmented barber-pole that reads as a smudge below ~16 pt.
+struct RingSpinner: View {
+    var size: CGFloat = 18
+    var lineWidth: CGFloat = 2.5
+    var color: Color = .accentColor
+
+    var body: some View {
+        TimelineView(.animation) { ctx in
+            let turn = ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1)
+            ZStack {
+                Circle().stroke(color.opacity(0.18), lineWidth: lineWidth)
+                Circle()
+                    .trim(from: 0, to: 0.28)
+                    .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                    .rotationEffect(.degrees(turn * 360))
+            }
+            .frame(width: size, height: size)
+        }
         .accessibilityHidden(true)
     }
 }
