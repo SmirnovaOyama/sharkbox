@@ -5,6 +5,9 @@ APPDIR ?= /Applications
 BIN     = build/shark
 APP     = build/Sharkbox.app
 APP_STAMP = build/.app.stamp
+# The version is read from Info.plist so the Makefile, the app and the zip name never disagree.
+VERSION  := $(shell /usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' Resources/Info.plist)
+DIST      = build/Sharkbox-$(VERSION).zip
 ENTITLEMENTS = shark.entitlements
 CLI_SOURCES  = $(wildcard Sources/shark/*.swift)
 SHARED       = Sources/shark/Util.swift Sources/shark/Paths.swift Sources/shark/Machine.swift \
@@ -17,7 +20,7 @@ SDKROOT     := $(shell xcrun --show-sdk-path)
 PLUGIN_DIRS := $(SDKROOT)/usr/lib/swift/host/plugins $(shell dirname $(shell xcrun -f swiftc))/../lib/swift/host/plugins
 PLUGIN_FLAGS = $(foreach d,$(PLUGIN_DIRS),-plugin-path $(d))
 
-.PHONY: all build app install uninstall clean run
+.PHONY: all build app dist install uninstall clean run
 .DELETE_ON_ERROR:
 
 all: build app
@@ -61,6 +64,16 @@ $(APP_STAMP): $(BIN) $(GUI_SOURCES) $(SHARED) $(GUI_ASSETS) Resources/Info.plist
 
 run: app
 	open $(APP)
+
+# ---- distributable ----
+# ditto keeps the code signature and extended attributes that plain `zip` can drop;
+# --keepParent zips the bundle itself rather than its contents.
+dist: app
+	rm -f $(DIST)
+	xattr -cr $(APP)        # Finder adds FinderInfo to bundles it has displayed; strict verification rejects it
+	codesign --verify --deep --strict $(APP)
+	ditto -c -k --keepParent $(APP) $(DIST)
+	@echo "packaged: $(DIST)"
 
 # ---- install ----
 # Installing over a binary that is currently executing fails with ETXTBSY, which is easy to miss in a

@@ -1,6 +1,6 @@
 import Foundation
 
-let version = "0.1.0"
+let version = "1.0.0"
 
 let usageText = """
 Sharkbox \(version) — free Linux machines on macOS, built on Apple Virtualization.framework
